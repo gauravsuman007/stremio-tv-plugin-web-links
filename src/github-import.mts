@@ -282,6 +282,12 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });
             writeFileSync(destination, content);
+
+            const wrote = readFileSync(destination);
+            console.log(`[web-links] wrote ${relative}: ${content.length} bytes fetched, ${wrote.length} bytes on disk`);
+            if (wrote.length !== content.length) {
+                throw new Error(`${relative}: wrote ${wrote.length} bytes, expected ${content.length} -- filesystem write did not stick`);
+            }
         }
 
         rmSync(scraperRoot, { recursive: true, force: true });
