@@ -104,17 +104,30 @@ async function githubApi(path, token) {
         throw new Error(`GitHub API -> ${response.status}`);
     return response.json();
 }
-async function listDistFiles(owner, repo, token, path = "dist") {
-    const listing = await githubApi(`repos/${owner}/${repo}/contents/${path}?ref=${BRANCH}`, token);
-    const entries = Array.isArray(listing) ? listing : [listing];
-    const files = [];
-    for (const entry of entries) {
-        if (entry.type === "file")
-            files.push(entry);
-        else if (entry.type === "dir")
-            files.push(...(await listDistFiles(owner, repo, token, entry.path)));
+/**
+ * Every file under `<repo>/dist` on `main`, via the Git Trees API rather
+ * than the Contents API: a scraper package can be genuinely large (the
+ * `cinejoy` scraper ships a several-MB bundled `playwright-core`), and the
+ * Contents API silently omits `content` for anything over 1MB -- fetching
+ * one of those "successfully" and writing an empty/missing file is exactly
+ * the bug that motivated this. The Trees+Blobs API supports files up to
+ * 100MB and, as a bonus, lists the whole tree in one recursive call
+ * instead of one request per directory.
+ */
+async function listDistFiles(owner, repo, token) {
+    const tree = await githubApi(`repos/${owner}/${repo}/git/trees/${BRANCH}?recursive=1`, token);
+    if (tree.truncated) {
+        throw new Error("this repository's tree is too large for GitHub's non-paginated tree API -- split dist/ up or ask upstream");
     }
-    return files;
+    return tree.tree.filter((entry) => entry.type === "blob" && entry.path.startsWith("dist/"));
+}
+/** A blob's content, always base64, up to 100MB -- see `listDistFiles`'s
+ *  doc comment for why this isn't the Contents API. */
+async function fetchBlob(owner, repo, sha, token) {
+    const blob = await githubApi(`repos/${owner}/${repo}/git/blobs/${sha}`, token);
+    if (!blob.content || blob.encoding !== "base64")
+        throw new Error("GitHub did not return this blob's content");
+    return Buffer.from(blob.content, "base64");
 }
 /**
  * Fetches every file under `<repo>/dist` on `main`, reads `scraper.json`
@@ -127,19 +140,19 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
     const files = await listDistFiles(owner, repo, token);
     if (!files.length)
         return { updated: false, fileCount: 0, error: "no files in dist/ on that branch" };
-    const manifestEntry = files.find((entry) => entry.name === "scraper.json");
+    const manifestEntry = files.find((entry) => entry.path === "dist/scraper.json");
     if (!manifestEntry)
         return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
-    const manifestFile = await githubApi(`repos/${owner}/${repo}/contents/${manifestEntry.path}?ref=${BRANCH}`, token);
-    if (!manifestFile.content || manifestFile.encoding !== "base64") {
-        return { updated: false, fileCount: 0, error: "GitHub did not return scraper.json's content" };
-    }
     let manifest;
     try {
-        manifest = JSON.parse(Buffer.from(manifestFile.content, "base64").toString("utf8"));
+        manifest = JSON.parse((await fetchBlob(owner, repo, manifestEntry.sha, token)).toString("utf8"));
     }
-    catch {
-        return { updated: false, fileCount: 0, error: "scraper.json is not valid JSON" };
+    catch (cause) {
+        return {
+            updated: false,
+            fileCount: 0,
+            error: cause instanceof Error && cause.message.includes("content") ? cause.message : "scraper.json is not valid JSON"
+        };
     }
     if (!manifest.id || !SCRAPER_ID_RE.test(manifest.id)) {
         return { updated: false, fileCount: 0, error: `scraper.json's id "${manifest.id}" is not a usable scraper id` };
@@ -166,12 +179,10 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
     try {
         for (const entry of files) {
             const relative = entry.path.replace(/^dist\//, "");
-            const file = await githubApi(`repos/${owner}/${repo}/contents/${entry.path}?ref=${BRANCH}`, token);
-            if (!file.content || file.encoding !== "base64")
-                continue;
+            const content = await fetchBlob(owner, repo, entry.sha, token);
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });
-            writeFileSync(destination, Buffer.from(file.content, "base64"));
+            writeFileSync(destination, content);
         }
         rmSync(scraperRoot, { recursive: true, force: true });
         renameSync(stagingDir, scraperRoot);

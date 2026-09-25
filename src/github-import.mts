@@ -100,10 +100,11 @@ function findSource(owner: string, repo: string): StoredSource | undefined {
     return sources.find((s) => keyOf(s.owner, s.repo) === keyOf(owner, repo));
 }
 
-interface GithubContentEntry {
-    name: string;
-    type: string;
+interface GithubTreeEntry {
+    /** Repo-relative, e.g. "dist/node_modules/playwright-core/lib/coreBundle.js". */
     path: string;
+    type: string;
+    sha: string;
 }
 
 async function githubApi<T>(path: string, token: string): Promise<T> {
@@ -133,19 +134,37 @@ async function githubApi<T>(path: string, token: string): Promise<T> {
     return response.json() as Promise<T>;
 }
 
-async function listDistFiles(owner: string, repo: string, token: string, path = "dist"): Promise<GithubContentEntry[]> {
-    const listing = await githubApi<GithubContentEntry[] | GithubContentEntry>(
-        `repos/${owner}/${repo}/contents/${path}?ref=${BRANCH}`,
+/**
+ * Every file under `<repo>/dist` on `main`, via the Git Trees API rather
+ * than the Contents API: a scraper package can be genuinely large (the
+ * `cinejoy` scraper ships a several-MB bundled `playwright-core`), and the
+ * Contents API silently omits `content` for anything over 1MB -- fetching
+ * one of those "successfully" and writing an empty/missing file is exactly
+ * the bug that motivated this. The Trees+Blobs API supports files up to
+ * 100MB and, as a bonus, lists the whole tree in one recursive call
+ * instead of one request per directory.
+ */
+async function listDistFiles(owner: string, repo: string, token: string): Promise<GithubTreeEntry[]> {
+    const tree = await githubApi<{ tree: GithubTreeEntry[]; truncated: boolean }>(
+        `repos/${owner}/${repo}/git/trees/${BRANCH}?recursive=1`,
         token
     );
-    const entries = Array.isArray(listing) ? listing : [listing];
-    const files: GithubContentEntry[] = [];
 
-    for (const entry of entries) {
-        if (entry.type === "file") files.push(entry);
-        else if (entry.type === "dir") files.push(...(await listDistFiles(owner, repo, token, entry.path)));
+    if (tree.truncated) {
+        throw new Error("this repository's tree is too large for GitHub's non-paginated tree API -- split dist/ up or ask upstream");
     }
-    return files;
+
+    return tree.tree.filter((entry) => entry.type === "blob" && entry.path.startsWith("dist/"));
+}
+
+/** A blob's content, always base64, up to 100MB -- see `listDistFiles`'s
+ *  doc comment for why this isn't the Contents API. */
+async function fetchBlob(owner: string, repo: string, sha: string, token: string): Promise<Buffer> {
+    const blob = await githubApi<{ content?: string; encoding?: string }>(`repos/${owner}/${repo}/git/blobs/${sha}`, token);
+
+    if (!blob.content || blob.encoding !== "base64") throw new Error("GitHub did not return this blob's content");
+
+    return Buffer.from(blob.content, "base64");
 }
 
 export interface ScraperImportResult {
@@ -168,22 +187,18 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
 
     if (!files.length) return { updated: false, fileCount: 0, error: "no files in dist/ on that branch" };
 
-    const manifestEntry = files.find((entry) => entry.name === "scraper.json");
+    const manifestEntry = files.find((entry) => entry.path === "dist/scraper.json");
     if (!manifestEntry) return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
-
-    const manifestFile = await githubApi<{ content?: string; encoding?: string }>(
-        `repos/${owner}/${repo}/contents/${manifestEntry.path}?ref=${BRANCH}`,
-        token
-    );
-    if (!manifestFile.content || manifestFile.encoding !== "base64") {
-        return { updated: false, fileCount: 0, error: "GitHub did not return scraper.json's content" };
-    }
 
     let manifest: { id?: string; entry?: string; version?: string };
     try {
-        manifest = JSON.parse(Buffer.from(manifestFile.content, "base64").toString("utf8"));
-    } catch {
-        return { updated: false, fileCount: 0, error: "scraper.json is not valid JSON" };
+        manifest = JSON.parse((await fetchBlob(owner, repo, manifestEntry.sha, token)).toString("utf8"));
+    } catch (cause) {
+        return {
+            updated: false,
+            fileCount: 0,
+            error: cause instanceof Error && cause.message.includes("content") ? cause.message : "scraper.json is not valid JSON"
+        };
     }
 
     if (!manifest.id || !SCRAPER_ID_RE.test(manifest.id)) {
@@ -215,15 +230,11 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
     try {
         for (const entry of files) {
             const relative = entry.path.replace(/^dist\//, "");
-            const file = await githubApi<{ content?: string; encoding?: string }>(
-                `repos/${owner}/${repo}/contents/${entry.path}?ref=${BRANCH}`,
-                token
-            );
-            if (!file.content || file.encoding !== "base64") continue;
+            const content = await fetchBlob(owner, repo, entry.sha, token);
 
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });
-            writeFileSync(destination, Buffer.from(file.content, "base64"));
+            writeFileSync(destination, content);
         }
 
         rmSync(scraperRoot, { recursive: true, force: true });
