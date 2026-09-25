@@ -1,4 +1,4 @@
-import type { PluginFactory, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
+import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
 import type { WebLink, WebLinkQuery, WebLinkScraper } from "./scraper.mjs";
 import { loadScrapers } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
@@ -60,20 +60,113 @@ function trimResolveCache() {
 }
 
 /**
- * A link into this plugin's own `/plugin/web-links/resolve` route, built
- * without a `client` (`extraStreamsFor` isn't handed one) -- plugins run
- * in-process with stremio-tv, so a loopback URL back into this same server
- * works fine. `session.id` is included so the resolve handler can VPN-route
- * the same way `extraStreamsFor` did; when it's missing, stremio-tv mints a
- * fresh session and redirects to it, path and query preserved, so the route
+ * A link into this plugin's own resolve route, built without a `client`
+ * (`extraStreamsFor` isn't handed one) -- plugins run in-process with
+ * stremio-tv, so a loopback URL back into this same server works fine.
+ * `session.id` is included so the resolve handler can VPN-route the same
+ * way `extraStreamsFor` did; when it's missing, stremio-tv mints a fresh
+ * session and redirects to it, path and query preserved, so the route
  * still resolves correctly either way.
+ *
+ * Two different paths, chosen by `resolveKind` (see `scraper.mts`):
+ * `/resolve` 303s straight to the resolved URL, for a plain file. An HLS
+ * playlist needs `/resolve.m3u8` instead -- see that route's own doc for
+ * why a redirect can't be used there. stremio-tv's own relay asserts a
+ * response's content-type from THIS URL's extension, never from what the
+ * resolve route itself returns (see stremio-tv's `proxy.ts`), which is the
+ * other reason the path has to actually end in `.m3u8`.
  */
-function resolveEndpoint(scraperId: string, resolveId: string, query: WebLinkQuery, sessionId: string | undefined): string {
+function resolveEndpoint(
+    scraperId: string,
+    resolveId: string,
+    resolveKind: "file" | "hls" | undefined,
+    query: WebLinkQuery,
+    sessionId: string | undefined
+): string {
     const params = new URLSearchParams({ scraper: scraperId, rid: resolveId, type: query.type, id: query.id, title: query.title });
     if (query.season != null) params.set("season", String(query.season));
     if (query.episode != null) params.set("episode", String(query.episode));
     const port = process.env.PORT || "3300";
-    return `http://127.0.0.1:${port}/s/${sessionId || "resolve"}/plugin/web-links/resolve?${params.toString()}`;
+    const path = resolveKind === "hls" ? "resolve.m3u8" : "resolve";
+    return `http://127.0.0.1:${port}/s/${sessionId || "resolve"}/plugin/web-links/${path}?${params.toString()}`;
+}
+
+/**
+ * Rewrites every relative URI in an HLS playlist to absolute, resolved
+ * against `baseUrl` (the real URL the playlist was actually fetched from).
+ * Handles plain URI lines (segments, variant playlists) and the `URI="..."`
+ * attribute on tag lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- both would
+ * otherwise resolve against whatever URL the CLIENT fetched the rewritten
+ * playlist from, not cinejoy's real CDN, and 404.
+ */
+function rewritePlaylist(text: string, baseUrl: string): string {
+    const absolutize = (ref: string): string => {
+        try {
+            return new URL(ref, baseUrl).toString();
+        } catch {
+            return ref;
+        }
+    };
+
+    return text
+        .split(/\r?\n/)
+        .map((line) => {
+            if (!line) return line;
+            if (line.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${absolutize(uri)}"`);
+            const trimmed = line.trim();
+            return trimmed ? absolutize(trimmed) : line;
+        })
+        .join("\n");
+}
+
+interface ResolveParams {
+    scraperId: string;
+    rid: string;
+    query: WebLinkQuery;
+}
+
+/** Shared by both resolve routes: cache lookup, then the scraper's actual
+ *  (possibly browser-driven) `resolve()`, cached again on the way out. */
+async function resolveWebLink(
+    host: PluginHost,
+    scrapers: WebLinkScraper[],
+    scraperId: string,
+    rid: string,
+    query: WebLinkQuery,
+    ctx: PluginRouteContext
+): Promise<WebLink | null> {
+    const scraper = scrapers.find((s) => s.id === scraperId);
+    if (!scraper?.resolve) return null;
+
+    const cacheKey = `${scraperId}:${rid}:${query.id}:${query.season ?? ""}:${query.episode ?? ""}`;
+    const cached = resolveCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) return cached.link;
+
+    const { fetch: fetchImpl, proxyUrl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
+    let link: WebLink | null;
+    try {
+        link = await scraper.resolve(rid, query, { fetch: fetchImpl, budgetMs: SEARCH_BUDGET_MS, proxyUrl });
+    } catch (cause) {
+        console.warn(`[web-links] resolve failed for ${scraperId}/${rid}:`, cause);
+        link = null;
+    }
+    trimResolveCache();
+    resolveCache.set(cacheKey, { at: Date.now(), link });
+    return link;
+}
+
+function parseResolveParams(ctx: PluginRouteContext): ResolveParams {
+    const query: WebLinkQuery = {
+        type: String(ctx.query.get("type") || ""),
+        id: String(ctx.query.get("id") || ""),
+        title: String(ctx.query.get("title") || "")
+    };
+    const season = ctx.query.get("season");
+    const episode = ctx.query.get("episode");
+    if (season) query.season = Number(season);
+    if (episode) query.episode = Number(episode);
+
+    return { scraperId: String(ctx.query.get("scraper") || ""), rid: String(ctx.query.get("rid") || ""), query };
 }
 
 function redirect(client: PluginRouteContext["client"], to: string) {
@@ -194,47 +287,47 @@ const createPlugin: PluginFactory = (host, configDir) => {
             method: "GET",
             path: "/plugin/web-links/resolve",
             async handle(ctx) {
-                const scraperId = String(ctx.query.get("scraper") || "");
-                const rid = String(ctx.query.get("rid") || "");
-                const query: WebLinkQuery = {
-                    type: String(ctx.query.get("type") || ""),
-                    id: String(ctx.query.get("id") || ""),
-                    title: String(ctx.query.get("title") || "")
-                };
-                const season = ctx.query.get("season");
-                const episode = ctx.query.get("episode");
-                if (season) query.season = Number(season);
-                if (episode) query.episode = Number(episode);
-
+                const { scraperId, rid, query } = parseResolveParams(ctx);
                 const all = await scrapersPromise;
-                const scraper = all.find((s) => s.id === scraperId);
-                if (!scraper?.resolve) return { status: 404, body: "unknown or non-resolving scraper" };
-
-                const cacheKey = `${scraperId}:${rid}:${query.id}:${query.season ?? ""}:${query.episode ?? ""}`;
-                const cached = resolveCache.get(cacheKey);
-                let link: WebLink | null;
-
-                if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) {
-                    link = cached.link;
-                } else {
-                    const { fetch: fetchImpl, proxyUrl } = await makeVpnAwareFetch(
-                        host,
-                        PLUGIN_ID,
-                        (ctx.client as { session?: unknown }).session
-                    );
-                    try {
-                        link = await scraper.resolve(rid, query, { fetch: fetchImpl, budgetMs: SEARCH_BUDGET_MS, proxyUrl });
-                    } catch (cause) {
-                        console.warn(`[web-links] resolve failed for ${scraperId}/${rid}:`, cause);
-                        link = null;
-                    }
-                    trimResolveCache();
-                    resolveCache.set(cacheKey, { at: Date.now(), link });
-                }
+                const link = await resolveWebLink(host, all, scraperId, rid, query, ctx);
 
                 if (!link) return { status: 502, body: "could not resolve this link right now" };
 
                 return { status: 303, headers: { location: link.url }, body: "" };
+            }
+        },
+        {
+            method: "GET",
+            path: "/plugin/web-links/resolve.m3u8",
+            async handle(ctx) {
+                const { scraperId, rid, query } = parseResolveParams(ctx);
+                const all = await scrapersPromise;
+                const link = await resolveWebLink(host, all, scraperId, rid, query, ctx);
+
+                if (!link) return { status: 502, body: "could not resolve this link right now" };
+
+                const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
+
+                let playlist: string;
+                try {
+                    const upstream = await fetchImpl(link.url, {
+                        headers: {
+                            ...(link.referrer ? { Referer: link.referrer } : {}),
+                            ...(link.userAgent ? { "User-Agent": link.userAgent } : {})
+                        }
+                    });
+                    if (!upstream.ok) return { status: 502, body: `upstream playlist fetch failed (${upstream.status})` };
+                    playlist = await upstream.text();
+                } catch (cause) {
+                    console.warn(`[web-links] could not fetch playlist for ${scraperId}/${rid}:`, cause);
+                    return { status: 502, body: "could not fetch the playlist" };
+                }
+
+                return {
+                    status: 200,
+                    headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
+                    body: rewritePlaylist(playlist, link.url)
+                };
             }
         }
     ];
@@ -259,7 +352,9 @@ const createPlugin: PluginFactory = (host, configDir) => {
         return perScraper.flatMap(({ scraper, links }) => {
             return links.map((link) => ({
                 value: {
-                    url: link.resolveId ? resolveEndpoint(scraper.id, link.resolveId, query, sessionId) : link.url,
+                    url: link.resolveId
+                        ? resolveEndpoint(scraper.id, link.resolveId, link.resolveKind, query, sessionId)
+                        : link.url,
                     name: link.quality,
                     title: link.title,
                     description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined
@@ -271,7 +366,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.3.0",
+        version: "0.3.1",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,

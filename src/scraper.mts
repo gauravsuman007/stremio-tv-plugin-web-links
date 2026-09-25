@@ -47,6 +47,15 @@ export interface WebLink {
      *  link -- once, at play time, never at list time -- to get the real,
      *  fresh one. Omit for a plain scraper whose `url` is already final. */
     resolveId?: string;
+    /** Only meaningful alongside `resolveId`. `"file"` (the default) means
+     *  the resolved `url` is a plain file the host can redirect straight to.
+     *  `"hls"` means it's an `.m3u8` playlist -- the host fetches it itself,
+     *  rewrites every relative URI inside to absolute (so it plays no
+     *  matter which URL the client actually fetched the playlist from), and
+     *  serves the rewritten text directly rather than redirecting, since a
+     *  redirect would hand the client a playlist full of paths that no
+     *  longer resolve against anything real. */
+    resolveKind?: "file" | "hls";
     /** Free-text quality label, e.g. "1080p WEB-DL" -- shown to the user,
      *  never parsed or trusted by the host. */
     quality?: string;

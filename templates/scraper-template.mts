@@ -88,6 +88,12 @@ interface WebLink {
      *  right before the link is actually used, once, at play time, never at
      *  list time, so the URL the user gets is always fresh. */
     resolveId?: string;
+    /** Only meaningful alongside `resolveId`. `"file"` (default) redirects
+     *  straight to the resolved URL. `"hls"` means it's an `.m3u8` playlist
+     *  -- the host fetches and rewrites its relative URIs to absolute
+     *  before serving it, since a redirect would leave the client fetching
+     *  the playlist from a URL those relative paths don't resolve against. */
+    resolveKind?: "file" | "hls";
     quality?: string;
     title?: string;
     size?: string;
