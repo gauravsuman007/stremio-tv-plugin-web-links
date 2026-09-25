@@ -132,13 +132,39 @@ async function listDistFiles(owner, repo, token) {
  * has no such wrapping to get wrong. Works for a private repo the same
  * token can read: GitHub honors `Authorization: Bearer <token>` on
  * raw.githubusercontent.com exactly like the API host.
+ *
+ * STILL VERIFIED, NOT JUST TRUSTED
+ * ----------------------------------
+ * A handful of this same scraper's larger files (a few MB, always the same
+ * ones) came back short -- correct HTTP 200, but fewer bytes than
+ * `content-length` promised -- ONLY when fetched from inside stremio-tv's
+ * own long-running process, never from a freshly started one hitting the
+ * exact same URL. Never pinned down which side truncates the stream (this
+ * process's own undici pool under sustained use, a proxy on the path, or
+ * something else long-running-process-specific) -- but the fix is the same
+ * either way: don't trust a 200 alone, check the byte count actually
+ * received against what the response declared, and retry the few requests
+ * this happens to before giving up on the whole import.
  */
 async function fetchRawFile(owner, repo, path, token) {
     const url = `https://raw.githubusercontent.com/${owner}/${repo}/${BRANCH}/${path.split("/").map(encodeURIComponent).join("/")}`;
-    const response = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
-    if (!response.ok)
-        throw new Error(`could not download ${path} (${response.status})`);
-    return Buffer.from(await response.arrayBuffer());
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    let lastError = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+            lastError = `could not download ${path} (${response.status})`;
+            continue;
+        }
+        const buffer = Buffer.from(await response.arrayBuffer());
+        const declared = response.headers.get("content-length");
+        if (declared && Number(declared) !== buffer.length) {
+            lastError = `${path}: got ${buffer.length} bytes, server said ${declared}`;
+            continue;
+        }
+        return buffer;
+    }
+    throw new Error(lastError || `could not download ${path}`);
 }
 /**
  * Fetches every file under `<repo>/dist` on `main`, reads `scraper.json`
