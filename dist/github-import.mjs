@@ -121,13 +121,24 @@ async function listDistFiles(owner, repo, token) {
     }
     return tree.tree.filter((entry) => entry.type === "blob" && entry.path.startsWith("dist/"));
 }
-/** A blob's content, always base64, up to 100MB -- see `listDistFiles`'s
- *  doc comment for why this isn't the Contents API. */
-async function fetchBlob(owner, repo, sha, token) {
-    const blob = await githubApi(`repos/${owner}/${repo}/git/blobs/${sha}`, token);
-    if (!blob.content || blob.encoding !== "base64")
-        throw new Error("GitHub did not return this blob's content");
-    return Buffer.from(blob.content, "base64");
+/**
+ * A file's raw bytes, straight from `raw.githubusercontent.com` -- not the
+ * git blobs JSON endpoint this started as. That endpoint is documented for
+ * files up to 100MB, but in practice it silently truncated `content` well
+ * under that for this scraper's ~3.4MB bundled `playwright-core` file too
+ * (caught the same way the original 1MB Contents-API bug was: by actually
+ * importing the real repo and checking the file landed at its full size,
+ * not by trusting either endpoint's documented limit). Plain raw content
+ * has no such wrapping to get wrong. Works for a private repo the same
+ * token can read: GitHub honors `Authorization: Bearer <token>` on
+ * raw.githubusercontent.com exactly like the API host.
+ */
+async function fetchRawFile(owner, repo, path, token) {
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/${BRANCH}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const response = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
+    if (!response.ok)
+        throw new Error(`could not download ${path} (${response.status})`);
+    return Buffer.from(await response.arrayBuffer());
 }
 /**
  * Fetches every file under `<repo>/dist` on `main`, reads `scraper.json`
@@ -145,7 +156,7 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
         return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
     let manifest;
     try {
-        manifest = JSON.parse((await fetchBlob(owner, repo, manifestEntry.sha, token)).toString("utf8"));
+        manifest = JSON.parse((await fetchRawFile(owner, repo, manifestEntry.path, token)).toString("utf8"));
     }
     catch (cause) {
         return {
@@ -179,7 +190,7 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
     try {
         for (const entry of files) {
             const relative = entry.path.replace(/^dist\//, "");
-            const content = await fetchBlob(owner, repo, entry.sha, token);
+            const content = await fetchRawFile(owner, repo, entry.path, token);
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });
             writeFileSync(destination, content);

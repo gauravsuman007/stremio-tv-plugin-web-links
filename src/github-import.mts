@@ -157,14 +157,25 @@ async function listDistFiles(owner: string, repo: string, token: string): Promis
     return tree.tree.filter((entry) => entry.type === "blob" && entry.path.startsWith("dist/"));
 }
 
-/** A blob's content, always base64, up to 100MB -- see `listDistFiles`'s
- *  doc comment for why this isn't the Contents API. */
-async function fetchBlob(owner: string, repo: string, sha: string, token: string): Promise<Buffer> {
-    const blob = await githubApi<{ content?: string; encoding?: string }>(`repos/${owner}/${repo}/git/blobs/${sha}`, token);
+/**
+ * A file's raw bytes, straight from `raw.githubusercontent.com` -- not the
+ * git blobs JSON endpoint this started as. That endpoint is documented for
+ * files up to 100MB, but in practice it silently truncated `content` well
+ * under that for this scraper's ~3.4MB bundled `playwright-core` file too
+ * (caught the same way the original 1MB Contents-API bug was: by actually
+ * importing the real repo and checking the file landed at its full size,
+ * not by trusting either endpoint's documented limit). Plain raw content
+ * has no such wrapping to get wrong. Works for a private repo the same
+ * token can read: GitHub honors `Authorization: Bearer <token>` on
+ * raw.githubusercontent.com exactly like the API host.
+ */
+async function fetchRawFile(owner: string, repo: string, path: string, token: string): Promise<Buffer> {
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/${BRANCH}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const response = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : {});
 
-    if (!blob.content || blob.encoding !== "base64") throw new Error("GitHub did not return this blob's content");
+    if (!response.ok) throw new Error(`could not download ${path} (${response.status})`);
 
-    return Buffer.from(blob.content, "base64");
+    return Buffer.from(await response.arrayBuffer());
 }
 
 export interface ScraperImportResult {
@@ -192,7 +203,7 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
 
     let manifest: { id?: string; entry?: string; version?: string };
     try {
-        manifest = JSON.parse((await fetchBlob(owner, repo, manifestEntry.sha, token)).toString("utf8"));
+        manifest = JSON.parse((await fetchRawFile(owner, repo, manifestEntry.path, token)).toString("utf8"));
     } catch (cause) {
         return {
             updated: false,
@@ -230,7 +241,7 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
     try {
         for (const entry of files) {
             const relative = entry.path.replace(/^dist\//, "");
-            const content = await fetchBlob(owner, repo, entry.sha, token);
+            const content = await fetchRawFile(owner, repo, entry.path, token);
 
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });

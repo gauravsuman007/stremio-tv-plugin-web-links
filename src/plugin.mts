@@ -184,7 +184,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.2.1",
+        version: "0.2.2",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
