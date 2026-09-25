@@ -288,8 +288,11 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
             mkdirSync(dirname(destination), { recursive: true });
             writeFileSync(destination, content);
 
+            // Belt-and-braces: fetchRawFile already verified the download
+            // against the git blob's own SHA-1, but a write that silently
+            // doesn't stick is a different failure mode than a bad
+            // download, and cheap to also catch here.
             const wrote = readFileSync(destination);
-            console.log(`[web-links] wrote ${relative}: ${content.length} bytes fetched, ${wrote.length} bytes on disk`);
             if (wrote.length !== content.length) {
                 throw new Error(`${relative}: wrote ${wrote.length} bytes, expected ${content.length} -- filesystem write did not stick`);
             }

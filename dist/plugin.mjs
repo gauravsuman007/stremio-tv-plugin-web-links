@@ -149,7 +149,7 @@ const createPlugin = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.2.7",
+        version: "0.2.8",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
