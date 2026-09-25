@@ -9,6 +9,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 const SCRAPER_ID_RE = /^[a-z0-9-]{1,64}$/;
 const BRANCH = "main";
 /** `true` when `next` is a real, comparable increase over `current`. */
@@ -136,30 +137,33 @@ async function listDistFiles(owner, repo, token) {
  * STILL VERIFIED, NOT JUST TRUSTED
  * ----------------------------------
  * A handful of this same scraper's larger files (a few MB, always the same
- * ones) came back short -- correct HTTP 200, but fewer bytes than
- * `content-length` promised -- ONLY when fetched from inside stremio-tv's
- * own long-running process, never from a freshly started one hitting the
- * exact same URL. Never pinned down which side truncates the stream (this
- * process's own undici pool under sustained use, a proxy on the path, or
- * something else long-running-process-specific) -- but the fix is the same
- * either way: don't trust a 200 alone, check the byte count actually
- * received against what the response declared, and retry the few requests
- * this happens to before giving up on the whole import.
+ * ones) came back short -- correct HTTP 200, truncated body -- ONLY when
+ * fetched from inside stremio-tv's own long-running process, never from a
+ * freshly started one hitting the exact same URL. Never pinned down which
+ * side truncates the stream (this process's own undici pool under
+ * sustained use, a proxy on the path, or something else long-running-
+ * process-specific) -- and `content-length` turned out not to be sent at
+ * all (chunked transfer), so it could never have caught this anyway. What
+ * DOES verify unconditionally: `expectedSha`, this same blob's SHA-1 as
+ * the git tree listing already reported it, recomputed the same way git
+ * itself hashes a blob (`sha1("blob " + length + "\0" + content)`) and
+ * compared -- a mismatch means an incomplete or corrupted download,
+ * full stop, regardless of what any header claimed.
  */
-async function fetchRawFile(owner, repo, path, token) {
+async function fetchRawFile(owner, repo, path, token, expectedSha) {
     const url = `https://raw.githubusercontent.com/${owner}/${repo}/${BRANCH}/${path.split("/").map(encodeURIComponent).join("/")}`;
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     let lastError = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
         const response = await fetch(url, { headers });
         if (!response.ok) {
             lastError = `could not download ${path} (${response.status})`;
             continue;
         }
         const buffer = Buffer.from(await response.arrayBuffer());
-        const declared = response.headers.get("content-length");
-        if (declared && Number(declared) !== buffer.length) {
-            lastError = `${path}: got ${buffer.length} bytes, server said ${declared}`;
+        const actualSha = createHash("sha1").update(`blob ${buffer.length}\0`).update(buffer).digest("hex");
+        if (actualSha !== expectedSha) {
+            lastError = `${path}: downloaded ${buffer.length} bytes, sha ${actualSha} != expected ${expectedSha} (attempt ${attempt + 1})`;
             continue;
         }
         return buffer;
@@ -182,7 +186,7 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
         return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
     let manifest;
     try {
-        manifest = JSON.parse((await fetchRawFile(owner, repo, manifestEntry.path, token)).toString("utf8"));
+        manifest = JSON.parse((await fetchRawFile(owner, repo, manifestEntry.path, token, manifestEntry.sha)).toString("utf8"));
     }
     catch (cause) {
         return {
@@ -216,7 +220,7 @@ export async function importScraperFromGithub(configDir, owner, repo, token) {
     try {
         for (const entry of files) {
             const relative = entry.path.replace(/^dist\//, "");
-            const content = await fetchRawFile(owner, repo, entry.path, token);
+            const content = await fetchRawFile(owner, repo, entry.path, token, entry.sha);
             const destination = join(stagingDir, relative);
             mkdirSync(dirname(destination), { recursive: true });
             writeFileSync(destination, content);
