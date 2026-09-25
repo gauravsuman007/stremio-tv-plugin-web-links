@@ -26,8 +26,24 @@ import type { WebLinkScraper } from "./scraper.mjs";
  * A scraper that fails to load or throws while loading is skipped, not
  * fatal -- one broken scraper must never take down the whole plugin's
  * ability to answer `extraStreamsFor` for every other scraper.
+ *
+ * CACHE-BUSTED, LIKE STREMIO-TV'S OWN PLUGIN LOADER
+ * -----------------------------------------------------
+ * A scraper's compiled file keeps the SAME path across a GitHub re-import
+ * (`<id>/<entry>`, the old directory replaced by a fresh one at that same
+ * path) -- and Node's ES module cache is keyed by resolved URL, not file
+ * content. Without busting it, `import()` here would keep handing back the
+ * very first copy of a scraper ever loaded at this path, no matter how
+ * many times the file underneath it changes -- exactly the bug stremio-tv's
+ * own `plugins.ts#loadPlugins()` already works around with a `?reload=`
+ * query param on `plugin.mjs`'s own URL. `reloadCounter` does the same
+ * thing here, bumped once per `loadScrapers()` call (i.e. once per
+ * successful import or explicit "Reload sources").
  */
+let reloadCounter = 0;
+
 export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]> {
+    const cacheBust = ++reloadCounter;
     const scrapersDir = path.join(configDir, "scrapers");
     let entries: string[];
     try {
@@ -50,7 +66,7 @@ export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]>
                 continue;
             }
 
-            const mod = await import(pathToFileURL(path.join(scraperDir, manifest.entry)).href);
+            const mod = await import(`${pathToFileURL(path.join(scraperDir, manifest.entry)).href}?reload=${cacheBust}`);
             const scraper = unwrapScraper(mod);
 
             if (isWebLinkScraper(scraper)) {
