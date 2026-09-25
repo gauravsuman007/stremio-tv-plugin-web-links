@@ -1,0 +1,47 @@
+name: ci
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - run: npm ci
+
+            # Typecheck before building. A type error here is a runtime
+            # crash on a television, where nobody can read the log.
+            - run: npm run check
+
+            - run: npm run build
+
+            - run: npm test
+
+            # THE GATE dist/ MUST PASS.
+            #
+            # stremio-tv's plugin importer pulls the COMPILED `dist/plugin.mjs`
+            # + `plugin.json` straight from this repo's `dist/` folder on
+            # GitHub -- there is no build step on the stremio-tv side. That
+            # only works if what is committed to `dist/` on `main` is exactly
+            # what a fresh build produces. This never auto-commits the diff
+            # back (that would be a push loop); a contributor who forgot to
+            # rebuild before committing gets caught here instead of shipping
+            # a stale plugin.
+            - name: Verify dist/ is up to date with a fresh build
+              run: |
+                  if ! git diff --exit-code -- dist/; then
+                    echo "::error::dist/ is out of date -- run 'npm run build' and commit the result before pushing."
+                    exit 1
+                  fi

@@ -1,8 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import type { WebLinkScraper } from "./scraper.mjs";
-
 /**
  * Loads every scraper package dropped into `<configDir>/scrapers/<id>/`.
  * `configDir` is this plugin's `data/` folder -- protected, update-proof --
@@ -27,44 +25,41 @@ import type { WebLinkScraper } from "./scraper.mjs";
  * fatal -- one broken scraper must never take down the whole plugin's
  * ability to answer `extraStreamsFor` for every other scraper.
  */
-export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]> {
+export async function loadScrapers(configDir) {
     const scrapersDir = path.join(configDir, "scrapers");
-    let entries: string[];
+    let entries;
     try {
         entries = readdirSync(scrapersDir, { withFileTypes: true })
             .filter((entry) => entry.isDirectory())
             .map((entry) => entry.name);
-    } catch {
+    }
+    catch {
         return [];
     }
-
-    const scrapers: WebLinkScraper[] = [];
+    const scrapers = [];
     for (const id of entries) {
         const scraperDir = path.join(scrapersDir, id);
         try {
-            const manifest = JSON.parse(readFileSync(path.join(scraperDir, "scraper.json"), "utf8")) as {
-                entry?: string;
-            };
+            const manifest = JSON.parse(readFileSync(path.join(scraperDir, "scraper.json"), "utf8"));
             if (!manifest.entry) {
                 console.warn(`[web-links] ${id}/scraper.json has no "entry", skipping`);
                 continue;
             }
-
             const mod = await import(pathToFileURL(path.join(scraperDir, manifest.entry)).href);
             const scraper = unwrapScraper(mod);
-
             if (isWebLinkScraper(scraper)) {
                 scrapers.push(scraper);
-            } else {
+            }
+            else {
                 console.warn(`[web-links] ${id} does not export a WebLinkScraper (needs id, name, search()), skipping`);
             }
-        } catch (cause) {
+        }
+        catch (cause) {
             console.warn(`[web-links] failed to load scraper "${id}":`, cause);
         }
     }
     return scrapers;
 }
-
 /**
  * A scraper compiled to `.mjs` exports a plain ESM default. One compiled to
  * `.cjs` (see the module doc's note on why that's sometimes necessary) goes
@@ -73,17 +68,17 @@ export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]>
  * than a native ESM default (`mod.default.default`, not `mod.default`).
  * This tries the ESM shape first, the CJS-interop shape second.
  */
-function unwrapScraper(mod: Record<string, unknown>): unknown {
-    if (isWebLinkScraper(mod.default)) return mod.default;
-
-    const nested = (mod.default as Record<string, unknown> | undefined)?.default;
-    if (isWebLinkScraper(nested)) return nested;
-
+function unwrapScraper(mod) {
+    if (isWebLinkScraper(mod.default))
+        return mod.default;
+    const nested = mod.default?.default;
+    if (isWebLinkScraper(nested))
+        return nested;
     return mod.default;
 }
-
-function isWebLinkScraper(value: unknown): value is WebLinkScraper {
-    if (!value || typeof value !== "object") return false;
-    const candidate = value as Record<string, unknown>;
+function isWebLinkScraper(value) {
+    if (!value || typeof value !== "object")
+        return false;
+    const candidate = value;
     return typeof candidate.id === "string" && typeof candidate.name === "string" && typeof candidate.search === "function";
 }

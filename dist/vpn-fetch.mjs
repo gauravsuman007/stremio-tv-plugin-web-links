@@ -1,13 +1,3 @@
-import type { PluginHost } from "./contract.mjs";
-
-export interface VpnAwareFetch {
-    fetch(url: string, init?: RequestInit): Promise<Response>;
-    /** The resolved proxy address itself, when a VPN is configured -- for a
-     *  scraper that opens its own connections outside `fetch` (e.g. driving
-     *  a real browser via `ctx.proxyUrl`, see `src/scraper.mts`). */
-    proxyUrl?: string;
-}
-
 /**
  * Builds one `fetch`-shaped function (and, when relevant, the raw proxy
  * address) scrapers use for the lifetime of a single search. Routes through
@@ -22,33 +12,32 @@ export interface VpnAwareFetch {
  * reused across every scraper invoked for that search rather than
  * re-resolved per scraper.
  */
-export async function makeVpnAwareFetch(host: PluginHost, pluginId: string, session: unknown): Promise<VpnAwareFetch> {
-    const plain: VpnAwareFetch = { fetch: (url, init) => fetch(url, init) };
-
-    const capability = await host.requestVpnCapability(pluginId, session).catch(() => ({ configured: false as const }));
-    if (!capability.configured || !capability.liveProxy) return plain;
-
+export async function makeVpnAwareFetch(host, pluginId, session) {
+    const plain = { fetch: (url, init) => fetch(url, init) };
+    const capability = await host.requestVpnCapability(pluginId, session).catch(() => ({ configured: false }));
+    if (!capability.configured || !capability.liveProxy)
+        return plain;
     const proxyUrl = await capability.liveProxy(session).catch(() => null);
-    if (!proxyUrl) return plain;
-
+    if (!proxyUrl)
+        return plain;
     const agent = await buildProxyAgent(proxyUrl);
-    if (!agent) return plain;
-
-    return { fetch: (url, init) => fetch(url, { ...init, dispatcher: agent } as RequestInit), proxyUrl };
+    if (!agent)
+        return plain;
+    return { fetch: (url, init) => fetch(url, { ...init, dispatcher: agent }), proxyUrl };
 }
-
 /** Node's `fetch` takes an `undici` dispatcher for proxying, not a plain
  *  agent option. Isolated here so a missing/incompatible `undici` never
  *  breaks the whole plugin -- callers already fall back to plain `fetch`
  *  when this returns `undefined`. */
-async function buildProxyAgent(proxyUrl: string): Promise<unknown> {
+async function buildProxyAgent(proxyUrl) {
     try {
         // Imported dynamically: undici ships with Node but the exact export
         // surface can shift between LTS lines, and a plugin must never
         // crash the host process over it.
-        const { ProxyAgent } = (await import("undici")) as { ProxyAgent: new (url: string) => unknown };
+        const { ProxyAgent } = (await import("undici"));
         return new ProxyAgent(proxyUrl);
-    } catch {
+    }
+    catch {
         return undefined;
     }
 }

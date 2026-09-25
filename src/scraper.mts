@@ -62,12 +62,21 @@ export interface ScraperContext {
      *  moves on -- a scraper doing multiple round trips (search page, then
      *  a detail page) should stop opening new requests once this is low. */
     budgetMs: number;
+    /** The household VPN's HTTP proxy address, when one is configured --
+     *  for a scraper that opens its OWN connections outside `ctx.fetch`
+     *  (e.g. driving a real browser), which `ctx.fetch` has no way to route
+     *  on that scraper's behalf. Absent when no VPN is configured. */
+    proxyUrl?: string;
 }
 
 export interface WebLinkScraper {
     /** Unique, stable, lowercase-with-dashes -- used in logs and settings. */
     id: string;
     name: string;
+    /** Compared with `versionSupersedes()` (same convention as stremio-tv's
+     *  own plugin/scraper importers) so a GitHub re-check only replaces a
+     *  scraper already running with a real, newer version. */
+    version?: string;
     /** Return every link this scraper can find for `query`. An empty array
      *  for "no results", never a throw for "not found" -- reserve throwing
      *  for the target site actually being unreachable/erroring. */

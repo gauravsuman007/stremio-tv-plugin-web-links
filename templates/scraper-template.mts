@@ -3,8 +3,23 @@
  * ===============================
  *
  * This file is self-contained -- it imports nothing from this repo, so you
- * can develop and test a scraper anywhere before dropping the compiled
- * `.mjs` into the plugin's `data/scrapers/` folder.
+ * can develop and test a scraper anywhere before dropping it into the
+ * plugin's `data/scrapers/` folder.
+ *
+ * A SCRAPER IS A SMALL PACKAGE, NOT A BARE FILE
+ * ------------------------------------------------
+ * `<pluginsDir>/web-links/data/scrapers/<id>/` holds one scraper:
+ *
+ *   - `scraper.json` -- `{ "id": "...", "entry": "your-file.mjs", "version"?: "1.0.0" }`.
+ *     The plugin reads this first to know what to load and, on a GitHub
+ *     import, whether the fetched build is actually newer.
+ *   - whatever `entry` names, plus any supporting files it needs (its own
+ *     `node_modules`, if it has real npm dependencies -- see
+ *     `stremio-tv-plugin-web-scraper`'s `cinejoy` scraper for a worked
+ *     example that ships `playwright-core` this way).
+ *
+ * A plain scraper like this template needs only the two files: `scraper.json`
+ * and its compiled `.mjs`.
  *
  * WHAT A SCRAPER IS
  * ------------------
@@ -38,10 +53,14 @@
  *         --module ES2022 --moduleResolution bundler \
  *         <your-scraper>.mts
  *
- * Drop the emitted `.mjs` into the plugin's `data/scrapers/` folder (that
- * folder is this plugin's protected, update-proof directory -- see the
- * plugin's own README) and hit `/plugin/web-links/reload`, or restart
- * stremio-tv, to pick it up.
+ * Put the emitted `.mjs` next to a `scraper.json` (see above) under
+ * `<pluginsDir>/web-links/data/scrapers/<id>/` -- that folder is this
+ * plugin's protected, update-proof directory, see the plugin's own README
+ * -- and hit `/plugin/web-links/reload`, or restart stremio-tv, to pick it
+ * up. A scraper with heavier dependencies that a bundler can't safely
+ * inline (a real browser driver, a native module) may need `.cjs` instead
+ * of `.mjs` -- see `stremio-tv-plugin-web-scraper`'s own module doc for
+ * why, and make sure `scraper.json`'s `entry` names whichever you produce.
  */
 
 /* ---- the contract this file implements ---------------------------------- */
@@ -68,11 +87,21 @@ interface WebLink {
 interface ScraperContext {
     fetch(url: string, init?: RequestInit): Promise<Response>;
     budgetMs: number;
+    /** The household VPN's proxy address, when configured -- only needed by
+     *  a scraper that opens its own connections outside `ctx.fetch` (e.g.
+     *  driving a real browser -- see `stremio-tv-plugin-web-scraper`'s
+     *  `cinejoy` scraper for a worked example). */
+    proxyUrl?: string;
 }
 
 interface WebLinkScraper {
     id: string;
     name: string;
+    /** Compared with dot-separated version numbers on a GitHub re-check --
+     *  a fetched build only replaces what's running when this is a real
+     *  increase. Optional; an unversioned scraper is never known to be an
+     *  update to anything. */
+    version?: string;
     search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
 }
 
@@ -101,6 +130,7 @@ async function search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink
 const exampleScraper: WebLinkScraper = {
     id: SCRAPER_ID,
     name: "Example Site",
+    version: "1.0.0",
     search
 };
 

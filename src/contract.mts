@@ -64,12 +64,19 @@ export interface StremioTvPlugin {
 
 export type PluginFactory = (host: PluginHost, configDir: string) => StremioTvPlugin;
 
+export interface VpnStatus {
+    [key: string]: unknown;
+}
+
 /** Only the host methods this plugin calls. See `src/plugin-types.ts` in
  *  stremio-tv for the full surface. */
 export interface PluginHost {
-    fetchVia?(url: string, options?: Record<string, unknown>): Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
     requestVpnCapability(pluginId: string, session?: unknown): Promise<VpnCapability>;
+    vpnBadge(status: VpnStatus | null): string;
+    vpnSheet(status: VpnStatus | null, action: string, back: string): string;
     render: {
         escape(value: unknown): string;
+        page(options: { title: string; body: string }): string;
+        chrome(client: unknown, current: string, signedIn: boolean): string;
     };
 }
