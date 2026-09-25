@@ -22,6 +22,41 @@ async function runScraper(scraper, query, fetchImpl, proxyUrl) {
     });
     return Promise.race([run, timeout]);
 }
+/**
+ * A resolved link is cached briefly, keyed by exactly what produced it, so
+ * ONE play attempt -- which fetches the same URL several times over (a
+ * range-probe, an ffprobe, then the actual relay) -- triggers the scraper's
+ * (possibly browser-driven) `resolve()` once, not three-plus times. Short
+ * enough that a LATER, separate play click always gets a freshly resolved
+ * link rather than reusing a token that may have already expired.
+ */
+const RESOLVE_TTL_MS = 45_000;
+const resolveCache = new Map();
+function trimResolveCache() {
+    const cutoff = Date.now() - RESOLVE_TTL_MS * 4;
+    for (const [key, entry] of resolveCache) {
+        if (entry.at < cutoff)
+            resolveCache.delete(key);
+    }
+}
+/**
+ * A link into this plugin's own `/plugin/web-links/resolve` route, built
+ * without a `client` (`extraStreamsFor` isn't handed one) -- plugins run
+ * in-process with stremio-tv, so a loopback URL back into this same server
+ * works fine. `session.id` is included so the resolve handler can VPN-route
+ * the same way `extraStreamsFor` did; when it's missing, stremio-tv mints a
+ * fresh session and redirects to it, path and query preserved, so the route
+ * still resolves correctly either way.
+ */
+function resolveEndpoint(scraperId, resolveId, query, sessionId) {
+    const params = new URLSearchParams({ scraper: scraperId, rid: resolveId, type: query.type, id: query.id, title: query.title });
+    if (query.season != null)
+        params.set("season", String(query.season));
+    if (query.episode != null)
+        params.set("episode", String(query.episode));
+    const port = process.env.PORT || "3300";
+    return `http://127.0.0.1:${port}/s/${sessionId || "resolve"}/plugin/web-links/resolve?${params.toString()}`;
+}
 function redirect(client, to) {
     const link = client.link;
     return { status: 303, headers: { location: link(to) }, body: "" };
@@ -123,6 +158,50 @@ const createPlugin = (host, configDir) => {
                 forgetGithubSource(String(ctx.form.get("owner") || ""), String(ctx.form.get("repo") || ""));
                 return redirect(ctx.client, "/plugin/web-links");
             }
+        },
+        {
+            method: "GET",
+            path: "/plugin/web-links/resolve",
+            async handle(ctx) {
+                const scraperId = String(ctx.query.get("scraper") || "");
+                const rid = String(ctx.query.get("rid") || "");
+                const query = {
+                    type: String(ctx.query.get("type") || ""),
+                    id: String(ctx.query.get("id") || ""),
+                    title: String(ctx.query.get("title") || "")
+                };
+                const season = ctx.query.get("season");
+                const episode = ctx.query.get("episode");
+                if (season)
+                    query.season = Number(season);
+                if (episode)
+                    query.episode = Number(episode);
+                const all = await scrapersPromise;
+                const scraper = all.find((s) => s.id === scraperId);
+                if (!scraper?.resolve)
+                    return { status: 404, body: "unknown or non-resolving scraper" };
+                const cacheKey = `${scraperId}:${rid}:${query.id}:${query.season ?? ""}:${query.episode ?? ""}`;
+                const cached = resolveCache.get(cacheKey);
+                let link;
+                if (cached && Date.now() - cached.at < RESOLVE_TTL_MS) {
+                    link = cached.link;
+                }
+                else {
+                    const { fetch: fetchImpl, proxyUrl } = await makeVpnAwareFetch(host, PLUGIN_ID, ctx.client.session);
+                    try {
+                        link = await scraper.resolve(rid, query, { fetch: fetchImpl, budgetMs: SEARCH_BUDGET_MS, proxyUrl });
+                    }
+                    catch (cause) {
+                        console.warn(`[web-links] resolve failed for ${scraperId}/${rid}:`, cause);
+                        link = null;
+                    }
+                    trimResolveCache();
+                    resolveCache.set(cacheKey, { at: Date.now(), link });
+                }
+                if (!link)
+                    return { status: 502, body: "could not resolve this link right now" };
+                return { status: 303, headers: { location: link.url }, body: "" };
+            }
         }
     ];
     async function extraStreamsFor(type, id, session) {
@@ -136,20 +215,23 @@ const createPlugin = (host, configDir) => {
         // one through; a scraper that needs richer metadata can fetch it
         // itself via `id`.
         const query = parseQuery(type, id, id);
-        const results = await Promise.all(enabled.map((scraper) => runScraper(scraper, query, fetchImpl, proxyUrl)));
-        return results.flat().map((link) => ({
-            value: {
-                url: link.url,
-                name: link.quality,
-                title: link.title,
-                description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined
-            }
-        }));
+        const sessionId = session?.id;
+        const perScraper = await Promise.all(enabled.map(async (scraper) => ({ scraper, links: await runScraper(scraper, query, fetchImpl, proxyUrl) })));
+        return perScraper.flatMap(({ scraper, links }) => {
+            return links.map((link) => ({
+                value: {
+                    url: link.resolveId ? resolveEndpoint(scraper.id, link.resolveId, query, sessionId) : link.url,
+                    name: link.quality,
+                    title: link.title,
+                    description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined
+                }
+            }));
+        });
     }
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.2.8",
+        version: "0.3.0",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,

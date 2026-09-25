@@ -75,7 +75,19 @@ interface WebLinkQuery {
 }
 
 interface WebLink {
+    /** Final and immediately fetchable, UNLESS `resolveId` is set -- see
+     *  below. Required either way (a placeholder is fine when `resolveId`
+     *  is set; it's never used). */
     url: string;
+    /** Set this INSTEAD of putting a real URL in `url` above when getting
+     *  the real link is expensive (drives a browser) or the link itself is
+     *  short-lived (a signed token that can expire between when the user
+     *  sees this result and when they actually click it) -- see
+     *  `stremio-tv-plugin-web-scraper`'s `cinejoy` scraper for a worked
+     *  example. When set, the host calls `resolve()` below with this id
+     *  right before the link is actually used, once, at play time, never at
+     *  list time, so the URL the user gets is always fresh. */
+    resolveId?: string;
     quality?: string;
     title?: string;
     size?: string;
@@ -103,6 +115,11 @@ interface WebLinkScraper {
      *  update to anything. */
     version?: string;
     search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
+    /** Only needed if `search()` ever sets `resolveId` on a result -- turns
+     *  that id back into the real, fresh link. Return `null` for "this one's
+     *  gone" rather than throwing, when you can tell the difference from the
+     *  target site being unreachable. */
+    resolve?(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null>;
 }
 
 /* ---- a minimal, working example ------------------------------------------ */

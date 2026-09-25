@@ -34,8 +34,19 @@ export interface WebLinkQuery {
 }
 
 export interface WebLink {
-    /** The direct (or referrer/UA-guarded) HTTP URL. Required. */
+    /** The direct (or referrer/UA-guarded) HTTP URL -- final and immediately
+     *  fetchable, UNLESS `resolveId` is set. Required either way (a
+     *  placeholder string is fine when `resolveId` is set; it is never
+     *  used), so a simple scraper needs nothing extra. */
     url: string;
+    /** Set when the real URL is expensive to get (a browser-driven capture)
+     *  or short-lived (a signed token) -- anything that would go stale, or
+     *  cost too much to do for every result, before the user ever clicks
+     *  it. When set, `url` above is a placeholder and the host calls
+     *  `scraper.resolve(resolveId, ...)` right before actually using this
+     *  link -- once, at play time, never at list time -- to get the real,
+     *  fresh one. Omit for a plain scraper whose `url` is already final. */
+    resolveId?: string;
     /** Free-text quality label, e.g. "1080p WEB-DL" -- shown to the user,
      *  never parsed or trusted by the host. */
     quality?: string;
@@ -79,6 +90,15 @@ export interface WebLinkScraper {
     version?: string;
     /** Return every link this scraper can find for `query`. An empty array
      *  for "no results", never a throw for "not found" -- reserve throwing
-     *  for the target site actually being unreachable/erroring. */
+     *  for the target site actually being unreachable/erroring. A result
+     *  may set `resolveId` instead of a real `url` -- see `WebLink`. */
     search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
+    /** Only needed by a scraper that sets `resolveId` on some of its
+     *  `WebLink`s -- turns that id back into the real, fresh link right
+     *  before it is used. Called at most once per play attempt (the host
+     *  briefly caches the answer so a single play doesn't re-run this for
+     *  every internal fetch of the same link), never at list time. Return
+     *  `null` for "this one's gone" rather than throwing, when that's
+     *  distinguishable from the target site being unreachable. */
+    resolve?(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null>;
 }
