@@ -60,9 +60,31 @@ function trimResolveCache() {
 }
 
 /**
+ * The host+port this same server is reachable at, for a link back into
+ * itself. NOT `127.0.0.1` -- that was tried and is wrong for exactly the
+ * requests this URL exists for: a non-live "direct" source is re-fetched
+ * not only by THIS process (`/direct/`'s own relay, which really is
+ * in-process) but also by the SEPARATE streaming-server container, for
+ * `probe?url=` (codec badges) and, if this plugin's own playlist is ever
+ * judged to need repackaging, `hlsv2`'s `mediaURL` fetch -- and `127.0.0.1`
+ * from INSIDE THAT container is that container's own loopback, nothing
+ * stremio-tv is listening on. Measured: every such cross-container fetch
+ * silently failed, which surfaced as no codec badges and a stream that
+ * played once, then "converted", then never played again. The container's
+ * own name (`stremio-tv`, `docker-compose.yml`'s `container_name`) is what
+ * every other cross-container address in that compose file already uses --
+ * `SELF_HOST` overrides it for a deployment named differently.
+ */
+function selfOrigin(): string {
+    const host = process.env.SELF_HOST || "stremio-tv";
+    const port = process.env.PORT || "3300";
+    return `http://${host}:${port}`;
+}
+
+/**
  * A link into this plugin's own resolve route, built without a `client`
  * (`extraStreamsFor` isn't handed one) -- plugins run in-process with
- * stremio-tv, so a loopback URL back into this same server works fine.
+ * stremio-tv, but that alone isn't enough, see `selfOrigin()`.
  * `session.id` is included so the resolve handler can VPN-route the same
  * way `extraStreamsFor` did; when it's missing, stremio-tv mints a fresh
  * session and redirects to it, path and query preserved, so the route
@@ -86,23 +108,49 @@ function resolveEndpoint(
     const params = new URLSearchParams({ scraper: scraperId, rid: resolveId, type: query.type, id: query.id, title: query.title });
     if (query.season != null) params.set("season", String(query.season));
     if (query.episode != null) params.set("episode", String(query.episode));
-    const port = process.env.PORT || "3300";
     const path = resolveKind === "hls" ? "resolve.m3u8" : "resolve";
-    return `http://127.0.0.1:${port}/s/${sessionId || "resolve"}/plugin/web-links/${path}?${params.toString()}`;
+    return `${selfOrigin()}/s/${sessionId || "resolve"}/plugin/web-links/${path}?${params.toString()}`;
 }
 
 /**
- * Rewrites every relative URI in an HLS playlist to absolute, resolved
- * against `baseUrl` (the real URL the playlist was actually fetched from).
- * Handles plain URI lines (segments, variant playlists) and the `URI="..."`
- * attribute on tag lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- both would
- * otherwise resolve against whatever URL the CLIENT fetched the rewritten
- * playlist from, not cinejoy's real CDN, and 404.
+ * A link into this plugin's own `/plugin/web-links/segment` route, standing
+ * in for a real relative URI (a segment, an init section, a variant
+ * playlist) inside a rewritten HLS playlist -- see `rewritePlaylist`.
+ *
+ * WHY THIS PROXIES BYTES RATHER THAN POINTING AT cinejoy DIRECTLY
+ * -------------------------------------------------------------------
+ * A first version rewrote relative URIs to cinejoy's own absolute URLs.
+ * That played once, briefly, then failed: stremio-tv's own player already
+ * carries the lesson for exactly this shape of source (see its `index.ts`,
+ * the note above the live-TV `direct` field) -- measured across dozens of
+ * live sources, NONE send `access-control-allow-origin`, so hls.js (which
+ * fetches segments with XHR, unlike a native HLS `<video>`) cannot read a
+ * cross-origin response at all and reports a decode/format error the
+ * moment it actually tries. Relaying every segment back through here, the
+ * same way stremio-tv's own `/hls/` relay does for a live channel, keeps
+ * every fetch same-origin. It also means a web link's segment bytes
+ * actually go through the household tunnel when one is configured --
+ * without this, only the scraper's OWN search-time calls did, and a viewer
+ * had no way to tell the difference from the player.
  */
-function rewritePlaylist(text: string, baseUrl: string): string {
-    const absolutize = (ref: string): string => {
+function segmentEndpoint(absoluteUrl: string, referrer: string | undefined, sessionId: string | undefined): string {
+    const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
+    if (referrer) params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    return `${selfOrigin()}/s/${sessionId || "resolve"}/plugin/web-links/segment?${params.toString()}`;
+}
+
+/**
+ * Rewrites every relative URI in an HLS playlist into a same-origin
+ * `segmentEndpoint()` link, resolved against `baseUrl` (the real URL the
+ * playlist was actually fetched from) before being wrapped. Handles plain
+ * URI lines (segments, variant playlists) and the `URI="..."` attribute on
+ * tag lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- both are a real fetch a
+ * player will make, and both need proxying for the same reason.
+ */
+function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined, sessionId: string | undefined): string {
+    const proxied = (ref: string): string => {
         try {
-            return new URL(ref, baseUrl).toString();
+            return segmentEndpoint(new URL(ref, baseUrl).toString(), referrer, sessionId);
         } catch {
             return ref;
         }
@@ -112,9 +160,9 @@ function rewritePlaylist(text: string, baseUrl: string): string {
         .split(/\r?\n/)
         .map((line) => {
             if (!line) return line;
-            if (line.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${absolutize(uri)}"`);
+            if (line.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${proxied(uri)}"`);
             const trimmed = line.trim();
-            return trimmed ? absolutize(trimmed) : line;
+            return trimmed ? proxied(trimmed) : line;
         })
         .join("\n");
 }
@@ -323,11 +371,55 @@ const createPlugin: PluginFactory = (host, configDir) => {
                     return { status: 502, body: "could not fetch the playlist" };
                 }
 
+                const sessionId = (ctx.client as { session?: { id?: string } }).session?.id;
+
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, link.url)
+                    body: rewritePlaylist(playlist, link.url, link.referrer, sessionId)
                 };
+            }
+        },
+        {
+            method: "GET",
+            path: "/plugin/web-links/segment",
+            async handle(ctx) {
+                const encodedUrl = String(ctx.query.get("u") || "");
+                let target: string;
+                try {
+                    target = Buffer.from(encodedUrl, "base64url").toString("utf8");
+                } catch {
+                    return { status: 400, body: "bad segment url" };
+                }
+                if (!/^https?:\/\//.test(target)) return { status: 400, body: "bad segment url" };
+
+                const encodedRef = String(ctx.query.get("ref") || "");
+                const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+
+                const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
+                const range = ctx.headers.range;
+
+                try {
+                    const upstream = await fetchImpl(target, {
+                        headers: {
+                            ...(referrer ? { Referer: referrer } : {}),
+                            ...(typeof range === "string" ? { Range: range } : {})
+                        }
+                    });
+                    const buffer = Buffer.from(await upstream.arrayBuffer());
+                    const headers: Record<string, string> = {
+                        "content-type": upstream.headers.get("content-type") || "application/octet-stream",
+                        "cache-control": "no-store",
+                        "accept-ranges": "bytes"
+                    };
+                    const contentRange = upstream.headers.get("content-range");
+                    if (contentRange) headers["content-range"] = contentRange;
+
+                    return { status: upstream.status, headers, body: buffer };
+                } catch (cause) {
+                    console.warn(`[web-links] segment fetch failed for ${target}:`, cause);
+                    return { status: 502, body: "could not fetch segment" };
+                }
             }
         }
     ];
@@ -366,7 +458,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.3.1",
+        version: "0.4.0",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
