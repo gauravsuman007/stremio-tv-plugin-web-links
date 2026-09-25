@@ -239,12 +239,17 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
 
     let manifest: { id?: string; entry?: string; version?: string };
     try {
-        manifest = JSON.parse((await fetchRawFile(owner, repo, manifestEntry.path, token, manifestEntry.sha)).toString("utf8"));
+        const raw = (await fetchRawFile(owner, repo, manifestEntry.path, token, manifestEntry.sha)).toString("utf8");
+        try {
+            manifest = JSON.parse(raw);
+        } catch {
+            return { updated: false, fileCount: 0, error: `scraper.json is not valid JSON: ${JSON.stringify(raw.slice(0, 200))}` };
+        }
     } catch (cause) {
         return {
             updated: false,
             fileCount: 0,
-            error: cause instanceof Error && cause.message.includes("content") ? cause.message : "scraper.json is not valid JSON"
+            error: `could not fetch scraper.json: ${cause instanceof Error ? cause.message : String(cause)}`
         };
     }
 
