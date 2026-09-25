@@ -1,0 +1,19 @@
+{
+  "name": "stremio-tv-plugin-web-links",
+  "version": "0.1.0",
+  "description": "stremio-tv plugin: search HTTP-hosted web links for a title's streams, via pluggable scrapers, with optional VPN-routed fetches.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/**/*.test.mjs"
+  },
+  "dependencies": {
+    "undici": "^6.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
