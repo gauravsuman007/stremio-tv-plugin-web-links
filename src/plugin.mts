@@ -132,11 +132,42 @@ function resolveEndpoint(
  * actually go through the household tunnel when one is configured --
  * without this, only the scraper's OWN search-time calls did, and a viewer
  * had no way to tell the difference from the player.
+ *
+ * TRULY RELATIVE -- NEITHER `selfOrigin()` NOR A LEADING SLASH.
+ * -------------------------------------------------------------------
+ * `resolveEndpoint()` bakes `selfOrigin()` in because it is a fresh URL
+ * with no base of its own: whoever holds it (stremio-tv's own relay,
+ * ffprobe on the separate streaming-server container) has to be able to
+ * fetch it cold. This URL is different -- it only ever appears INSIDE a
+ * playlist `rewritePlaylist` has already produced, and every consumer of
+ * that playlist (the browser's hls.js, ffprobe, ffmpeg's remux) resolves a
+ * relative reference against the URL IT fetched the playlist from, not
+ * against anything baked into the string. Making this one absolute
+ * (`http://stremio-tv:3300/...`) looked harmless and was not: it hard-codes
+ * the CONTAINER's own hostname, which only Docker's internal DNS can
+ * resolve. ffprobe and ffmpeg run where that resolves and never noticed;
+ * the television's own browser does not run there, so every single
+ * segment fetch failed outright (hls.js: `fragLoadError HTTP Error 0` on
+ * EVERY fragment) and playback fell through to a server-side conversion
+ * every time, which is a genuinely different request path and so was
+ * never affected.
+ *
+ * A root-relative path (a leading `/`) is not enough either: stremio-tv
+ * itself sits behind a reverse proxy that mounts it at a path prefix
+ * (`/app/stremio-tv`, stripped before it ever reaches this process -- see
+ * `client.ts`), so a browser resolving a root-relative URI drops that
+ * prefix and asks the proxy for a path it does not route. This route and
+ * `resolve.m3u8` live in the same directory
+ * (`plugin/web-links/resolve.m3u8` next to `plugin/web-links/segment`), so
+ * a BARE relative reference -- no leading slash at all -- resolves
+ * against whatever the playlist's own URL was, prefix included, for every
+ * fetcher on every network without this code ever having to know what
+ * that prefix is.
  */
-function segmentEndpoint(absoluteUrl: string, referrer: string | undefined, sessionId: string | undefined): string {
+function segmentEndpoint(absoluteUrl: string, referrer: string | undefined): string {
     const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
     if (referrer) params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
-    return `${selfOrigin()}/s/${sessionId || "resolve"}/plugin/web-links/segment?${params.toString()}`;
+    return `segment?${params.toString()}`;
 }
 
 /**
@@ -147,10 +178,10 @@ function segmentEndpoint(absoluteUrl: string, referrer: string | undefined, sess
  * tag lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- both are a real fetch a
  * player will make, and both need proxying for the same reason.
  */
-function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined, sessionId: string | undefined): string {
+function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined): string {
     const proxied = (ref: string): string => {
         try {
-            return segmentEndpoint(new URL(ref, baseUrl).toString(), referrer, sessionId);
+            return segmentEndpoint(new URL(ref, baseUrl).toString(), referrer);
         } catch {
             return ref;
         }
@@ -371,12 +402,10 @@ const createPlugin: PluginFactory = (host, configDir) => {
                     return { status: 502, body: "could not fetch the playlist" };
                 }
 
-                const sessionId = (ctx.client as { session?: { id?: string } }).session?.id;
-
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, link.url, link.referrer, sessionId)
+                    body: rewritePlaylist(playlist, link.url, link.referrer)
                 };
             }
         },
@@ -458,7 +487,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.4.0",
+        version: "0.4.1",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
