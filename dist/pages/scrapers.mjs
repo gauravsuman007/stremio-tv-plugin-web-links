@@ -14,13 +14,17 @@ export function scrapersPage(host, client, signedIn, rows, githubSources = [], n
     const escape = host.render.escape;
     const list = rows
         .map((row) => {
-        const toggle = row.sole
-            ? `<span class="step off">${row.enabled ? "On" : "Off"} &mdash; the only source configured</span>`
-            : `<a class="step" href="${escape(`${linkTo("/plugin/web-links")}?${row.enabled ? "off" : "on"}=${encodeURIComponent(row.id)}`)}">${row.enabled ? "Switch off" : "Switch on"}</a>`;
+        const toggle = `<a class="step" href="${escape(`${linkTo("/plugin/web-links")}?${row.enabled ? "off" : "on"}=${encodeURIComponent(row.id)}`)}">${row.enabled ? "Disable" : "Enable"}</a>`;
+        // A dialog needs a script and a page may carry only one, so the
+        // confirmation is the browser's own, attached inline. Delete acts
+        // on the whole package, which may hold several scrapers.
+        const remove = row.packageId
+            ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-delete"))}" style="display:inline" onsubmit="return confirm('Delete ${escape(row.packageId).replace(/'/g, "")} and every scraper in it? This cannot be undone.')"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Delete</button></form>`
+            : "";
         return `<li class="railrow${row.enabled ? "" : " railoff"}">
 <span class="railname">${escape(row.name)}${row.version ? ` <span class="railsay">v${escape(row.version)}</span>` : ""}</span>
 <span class="railsay">${escape(row.id)}</span>
-<span class="railacts">${row.packageId ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-update"))}" style="display:inline"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Update</button></form>` : ""}${toggle}</span>
+<span class="railacts">${row.packageId ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-update"))}" style="display:inline"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Update</button></form>` : ""}${toggle}${remove}</span>
 </li>`;
     })
         .join("\n");
@@ -43,13 +47,15 @@ export function scrapersPage(host, client, signedIn, rows, githubSources = [], n
 </li>`;
     })
         .join("\n");
-    const vpnPanel = host.vpnBadge(vpn) + host.vpnSheet(vpn, linkTo("/vpn"), "/plugin/web-links");
+    // `.routing` is what the sheet is positioned against; without it the sheet lands on the nav bar.
+    const rawVpn = host.vpnBadge(vpn, "links") + host.vpnSheet(vpn, linkTo("/vpn"), "/plugin/web-links", "links");
+    const vpnPanel = rawVpn ? `<section class="routing">${rawVpn}</section>` : "";
     return host.render.page({
         title: "Web Links",
         body: `${host.render.chrome(client, "settings", signedIn)}
 <div class="tvhead">
 <h1>Web Links</h1>
-<p class="bar"><a class="step" href="${escape(linkTo("/settings/plugins"))}">&lsaquo; Plugins</a></p>
+<p class="bar"><a class="step" href="${escape(linkTo("/settings"))}">&lsaquo; Settings</a></p>
 </div>
 <p class="hint">Searches HTTP-hosted web links for the title you're playing, using whatever scrapers are dropped in below. Their results show up in their own column on the &ldquo;select quality&rdquo; screen, separate from torrent sources.</p>
 ${vpnPanel
