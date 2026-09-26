@@ -466,8 +466,22 @@ const createPlugin = (host, configDir) => {
                         }
                     });
                     const buffer = Buffer.from(await upstream.arrayBuffer());
+                    // Some CDNs (vidrift's relay) label video segments text/html to
+                    // dodge hotlink checks. stremio-tv injects its device script into
+                    // every text/html plugin response, which corrupts the bytes, so
+                    // the type is decided from the bytes when the label says html.
+                    let type = upstream.headers.get("content-type") || "application/octet-stream";
+                    if (/text\/html/i.test(type) && buffer.length > 8) {
+                        const box = buffer.subarray(4, 8).toString("latin1");
+                        if (buffer[0] === 0x47)
+                            type = "video/mp2t";
+                        else if (/^(ftyp|styp|moof|moov)$/.test(box))
+                            type = "video/mp4";
+                        else if (buffer[0] !== 0x3c && buffer[0] !== 0x20 && buffer[0] !== 0x0a)
+                            type = "application/octet-stream";
+                    }
                     const headers = {
-                        "content-type": upstream.headers.get("content-type") || "application/octet-stream",
+                        "content-type": type,
                         "cache-control": "no-store",
                         "accept-ranges": "bytes"
                     };
