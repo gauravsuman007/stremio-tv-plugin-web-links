@@ -8,7 +8,7 @@
  * fetched and synced, exactly like installing a whole plugin.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -222,22 +222,126 @@ export interface ScraperImportResult {
     upToDate?: boolean;
     fileCount: number;
     error?: string;
+    /** Several packages were handled: what happened to each, ready to show. */
+    summary?: string;
+    /** A single package was replaced rather than newly installed. */
+    replaced?: boolean;
 }
 
 /**
- * Fetches every file under `<repo>/dist` on `main`, reads `scraper.json`
- * (`{ id, entry, version? }`) to learn the id this install belongs under,
- * and replaces `<configDir>/scrapers/<id>/` with the fetched tree -- but
- * only when `versionSupersedes` says this is a real update, or the id is
- * new.
+ * Imports every scraper package a repository publishes under `dist/`.
+ *
+ * A repository may hold one package (`dist/scraper.json`) or several
+ * (`dist/<name>/scraper.json`, alongside or instead of the root one). Each is
+ * judged on its own: a package not installed yet is installed, an installed
+ * one is replaced only when its version is a real increase (or, at the same
+ * version, when its files changed -- an author who added a scraper and
+ * forgot to bump must not be silently ignored), and the rest are left alone.
+ * One package failing never stops the others.
+ *
+ * `expectId` narrows this to that one package (a per-scraper Update).
  */
 export async function importScraperFromGithub(configDir: string, owner: string, repo: string, token: string, expectId?: string): Promise<ScraperImportResult> {
     const files = await listDistFiles(owner, repo, token);
 
     if (!files.length) return { updated: false, fileCount: 0, error: "no files in dist/ on that branch" };
 
-    const manifestEntry = files.find((entry) => entry.path === "dist/scraper.json");
-    if (!manifestEntry) return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
+    const manifests = files.filter((entry) => /^dist\/(?:[^/]+\/)?scraper\.json$/.test(entry.path) && !entry.path.startsWith("dist/node_modules/"));
+    if (!manifests.length) return { updated: false, fileCount: 0, error: "dist/scraper.json is missing -- expected { id, entry, version? }" };
+
+    const prefixes = manifests.map((m) => m.path.slice(0, -"scraper.json".length)); // "dist/" or "dist/<name>/"
+    const packages: PackageOutcome[] = [];
+
+    for (const manifestEntry of manifests) {
+        const prefix = manifestEntry.path.slice(0, -"scraper.json".length);
+        // A file belongs to the most specific package prefix that contains it.
+        const own = files.filter((f) => {
+            if (!f.path.startsWith(prefix)) return false;
+            return !prefixes.some((other) => other.length > prefix.length && f.path.startsWith(other));
+        });
+
+        packages.push(await importPackage(configDir, owner, repo, token, prefix, manifestEntry, own, expectId));
+    }
+
+    const matched = expectId ? packages.filter((pkg) => pkg.id === expectId) : packages;
+
+    if (expectId && !matched.length) {
+        const found = packages.map((pkg) => pkg.id).filter(Boolean).join(", ");
+        return { updated: false, fileCount: 0, error: `${owner}/${repo} holds scraper package${found ? ` "${found}"` : "s that could not be read"}, not "${expectId}"` };
+    }
+
+    const installed = matched.filter((pkg) => pkg.status === "installed" || pkg.status === "updated");
+    const failed = matched.filter((pkg) => pkg.status === "failed");
+    const current = matched.filter((pkg) => pkg.status === "current");
+    const label = (pkg: PackageOutcome) => `${pkg.id ?? pkg.prefix}${pkg.version ? ` v${pkg.version}` : ""}`;
+
+    const notes = [
+        ...installed.map((pkg) => `${pkg.status === "installed" ? "installed" : "updated"} ${label(pkg)}`),
+        ...current.map((pkg) => `${label(pkg)} already current`),
+        ...failed.map((pkg) => `${pkg.id ?? pkg.prefix}: ${pkg.error}`)
+    ];
+
+    // Single package: keep the shape callers already read.
+    if (matched.length === 1) {
+        const only = matched[0]!;
+        return {
+            id: only.id,
+            version: only.version,
+            updated: installed.length === 1,
+            replaced: only.status === "updated",
+            upToDate: only.status === "current",
+            fileCount: only.fileCount,
+            ...(only.status === "current" || only.status === "failed" ? { error: only.error } : {})
+        };
+    }
+
+    return {
+        id: matched.map((pkg) => pkg.id).filter(Boolean).join(", "),
+        updated: installed.length > 0,
+        upToDate: !installed.length && !failed.length,
+        fileCount: matched.reduce((n, pkg) => n + pkg.fileCount, 0),
+        summary: notes.join("; "),
+        ...(failed.length ? { error: notes.join("; ") } : {})
+    };
+}
+
+interface PackageOutcome {
+    prefix: string;
+    id?: string;
+    version?: string;
+    status: "installed" | "updated" | "current" | "failed";
+    fileCount: number;
+    error?: string;
+}
+
+/** Same bytes, same hash: git's own blob SHAs, in path order. */
+function contentHash(entries: GithubTreeEntry[]): string {
+    return createHash("sha1")
+        .update(entries.map((e) => `${e.path}:${e.sha}`).sort().join("\n"))
+        .digest("hex");
+}
+
+function readRecordedHash(scraperRoot: string): string | undefined {
+    try {
+        const parsed = JSON.parse(readFileSync(join(scraperRoot, ".source.json"), "utf8")) as { hash?: string };
+        return typeof parsed.hash === "string" ? parsed.hash : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+async function importPackage(
+    configDir: string,
+    owner: string,
+    repo: string,
+    token: string,
+    prefix: string,
+    manifestEntry: GithubTreeEntry,
+    files: GithubTreeEntry[],
+    expectId?: string
+): Promise<PackageOutcome> {
+    const base: PackageOutcome = { prefix, status: "failed", fileCount: files.length };
+    const fail = (error: string, extra: Partial<PackageOutcome> = {}): PackageOutcome => ({ ...base, ...extra, status: "failed", error });
 
     let manifest: { id?: string; entry?: string; version?: string };
     try {
@@ -245,42 +349,49 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
         try {
             manifest = JSON.parse(raw);
         } catch {
-            return { updated: false, fileCount: 0, error: `scraper.json is not valid JSON: ${JSON.stringify(raw.slice(0, 200))}` };
+            return fail(`scraper.json is not valid JSON: ${JSON.stringify(raw.slice(0, 200))}`);
         }
     } catch (cause) {
-        return {
-            updated: false,
-            fileCount: 0,
-            error: `could not fetch scraper.json: ${cause instanceof Error ? cause.message : String(cause)}`
-        };
+        return fail(`could not fetch scraper.json: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
 
-    if (!manifest.id || !SCRAPER_ID_RE.test(manifest.id)) {
-        return { updated: false, fileCount: 0, error: `scraper.json's id "${manifest.id}" is not a usable scraper id` };
-    }
-    if (!manifest.entry) {
-        return { updated: false, fileCount: 0, error: "scraper.json is missing \"entry\"" };
-    }
+    if (!manifest.id || !SCRAPER_ID_RE.test(manifest.id)) return fail(`scraper.json's id "${manifest.id}" is not a usable scraper id`);
+    if (!manifest.entry) return fail('scraper.json is missing "entry"', { id: manifest.id });
 
-    // A guessed repository must hold the package it was guessed for.
-    if (expectId && manifest.id !== expectId) {
-        return { updated: false, fileCount: 0, error: `${owner}/${repo} holds scraper package "${manifest.id}", not "${expectId}"` };
-    }
+    const named = { id: manifest.id, version: manifest.version };
+
+    // Per-scraper Update: leave every other package in the repo untouched.
+    if (expectId && manifest.id !== expectId) return { ...base, ...named, status: "current" };
 
     const scraperRoot = join(configDir, "scrapers", manifest.id);
     const existingVersion = readInstalledVersion(scraperRoot);
+    const hash = contentHash(files);
+    const installedBefore = existingVersion !== undefined || existsSync(join(scraperRoot, "scraper.json"));
 
-    if (existingVersion !== undefined && !versionSupersedes(manifest.version, existingVersion)) {
-        return {
-            id: manifest.id,
-            version: manifest.version,
-            updated: false,
-            upToDate: true,
-            fileCount: files.length,
-            error: existingVersion
-                ? `already have v${existingVersion}${manifest.version ? `, this is v${manifest.version}` : " (this build has no version)"}`
-                : "already installed, and this build has no version to compare"
-        };
+    if (installedBefore) {
+        const newer = versionSupersedes(manifest.version, existingVersion ?? "");
+        const recorded = readRecordedHash(scraperRoot);
+        // Same version, different files: the author changed the package
+        // without bumping it. Only when we know what we installed.
+        const changedInPlace = !newer && manifest.version !== undefined && manifest.version === existingVersion && recorded !== undefined && recorded !== hash;
+
+        if (!newer && !changedInPlace) {
+            if (recorded === undefined) {
+                try {
+                    writeFileSync(join(scraperRoot, ".source.json"), JSON.stringify({ owner, repo, hash }));
+                } catch {
+                    /* the hash is an optimisation of the next check, not state */
+                }
+            }
+            return {
+                ...base,
+                ...named,
+                status: "current",
+                error: existingVersion
+                    ? `already have v${existingVersion}${manifest.version ? `, this is v${manifest.version}` : " (this build has no version)"}`
+                    : "already installed, and this build has no version to compare"
+            };
+        }
     }
 
     mkdirSync(join(configDir, "scrapers"), { recursive: true });
@@ -289,7 +400,7 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
 
     try {
         for (const entry of files) {
-            const relative = entry.path.replace(/^dist\//, "");
+            const relative = entry.path.slice(prefix.length);
             const content = await fetchRawFile(owner, repo, entry.path, token, entry.sha);
 
             const destination = join(stagingDir, relative);
@@ -309,17 +420,11 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
         rmSync(scraperRoot, { recursive: true, force: true });
         renameSync(stagingDir, scraperRoot);
         // Where this package came from, so its Update button never has to guess.
-        writeFileSync(join(scraperRoot, ".source.json"), JSON.stringify({ owner, repo }));
+        writeFileSync(join(scraperRoot, ".source.json"), JSON.stringify({ owner, repo, hash }));
 
-        return { id: manifest.id, version: manifest.version, updated: true, fileCount: files.length };
+        return { ...base, ...named, status: installedBefore ? "updated" : "installed" };
     } catch (cause) {
-        return {
-            id: manifest.id,
-            version: manifest.version,
-            updated: false,
-            fileCount: files.length,
-            error: cause instanceof Error ? cause.message : String(cause)
-        };
+        return fail(cause instanceof Error ? cause.message : String(cause), named);
     } finally {
         try {
             rmSync(stagingDir, { recursive: true, force: true });
