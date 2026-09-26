@@ -194,7 +194,23 @@ function rewritePlaylist(text, baseUrl, referrer) {
         if (!line)
             return line;
         if (line.startsWith("#")) {
-            const rewritten = line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${proxied(uri, false)}"`);
+            /*
+                A RENDITION'S URI IS A PLAYLIST, NOT A SEGMENT.
+
+                `#EXT-X-MEDIA` (a separate audio or subtitle track --
+                CineJoy's master has one) and the I-frame variant tag
+                name another playlist, exactly like the line after a
+                STREAM-INF. Sent through `segmentEndpoint` it came back
+                as raw bytes with its own ABSOLUTE segment URLs
+                untouched, so the browser fetched the audio straight
+                from the CDN: cross-origin, off the tunnel, and hls.js
+                failed the whole title with `fragParsingError` -- which
+                the player answered by converting, and the conversion
+                failed on the same playlist. The picture variants were
+                relayed correctly the whole time.
+            */
+            const isPlaylistTag = /^#EXT-X-(MEDIA|I-FRAME-STREAM-INF):/.test(line);
+            const rewritten = line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${proxied(uri, isPlaylistTag)}"`);
             nextIsVariant = line.startsWith("#EXT-X-STREAM-INF");
             return rewritten;
         }
