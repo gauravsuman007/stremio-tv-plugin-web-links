@@ -573,7 +573,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
         }
     ];
 
-    async function extraStreamsFor(type: string, id: string, session?: unknown): Promise<{ value: ExtraStream }[]> {
+    async function extraStreamsFor(type: string, id: string, session?: unknown): Promise<{ from?: unknown; value: ExtraStream }[]> {
         const all = await scrapersPromise;
         const enabled = all.filter((s) => scraperEnabled(s.id));
         if (enabled.length === 0) return [];
@@ -592,6 +592,22 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
         return perScraper.flatMap(({ scraper, links }) => {
             return links.map((link) => ({
+                /*
+                    The row's "who" line is the addon's manifest name, and
+                    for every web link that used to be the plugin's own
+                    ("Web Links") -- which says nothing about WHICH scraper
+                    found it. Named in full, quality part included: two
+                    links from one scraper differ only by it. The id stays
+                    the plugin's, because the core splits its column by id.
+                */
+                from: {
+                    base: "",
+                    manifest: {
+                        id: PLUGIN_ID,
+                        name: [scraper.name, link.quality].filter(Boolean).join(" \u00b7 "),
+                        types: [type]
+                    }
+                },
                 value: {
                     url: link.resolveId
                         ? resolveEndpoint(scraper.id, link.resolveId, link.resolveKind, query, sessionId)
