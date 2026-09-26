@@ -89,6 +89,55 @@ function resolveEndpoint(scraperId, resolveId, resolveKind, query, sessionId) {
     return `${selfOrigin()}/s/${sessionId || "resolve"}/plugin/web-links/${path}?${params.toString()}`;
 }
 /**
+ * Request headers a link can ask the relay to send upstream, besides
+ * Referer (`WebLink.referrer`). Some CDNs answer 403 to a Referer alone and
+ * serve once `Origin` matches too, as it always does from a browser. The
+ * names are an allowlist: the relay's URLs are reachable by anything that
+ * can reach the plugin, so it must not let them set Host, Cookie,
+ * Authorization and the like.
+ */
+const RELAY_HEADER_ALLOWED = /^(origin|accept|accept-language|user-agent|x-[a-z0-9-]+)$/i;
+const RELAY_HEADER_MAX = 8;
+const RELAY_HEADER_VALUE_MAX = 512;
+function cleanRelayHeaders(input) {
+    const out = {};
+    if (!input || typeof input !== "object")
+        return out;
+    for (const [name, value] of Object.entries(input)) {
+        if (Object.keys(out).length >= RELAY_HEADER_MAX)
+            break;
+        if (typeof value !== "string" || value.length > RELAY_HEADER_VALUE_MAX)
+            continue;
+        if (!RELAY_HEADER_ALLOWED.test(name) || /[\r\n]/.test(value))
+            continue;
+        out[name] = value;
+    }
+    return out;
+}
+/** What a link asks the relay to send besides Referer: its `headers`, plus its `userAgent`. */
+function linkRelayHeaders(link) {
+    return cleanRelayHeaders({ ...link.headers, ...(link.userAgent ? { "User-Agent": link.userAgent } : {}) });
+}
+function encodeRelayHeaders(headers) {
+    if (!headers || Object.keys(headers).length === 0)
+        return undefined;
+    return Buffer.from(JSON.stringify(headers), "utf8").toString("base64url");
+}
+function decodeRelayHeaders(param) {
+    if (!param)
+        return {};
+    try {
+        return cleanRelayHeaders(JSON.parse(Buffer.from(param, "base64url").toString("utf8")));
+    }
+    catch {
+        return {};
+    }
+}
+/** The headers for one upstream fetch: the Referer, then the allowed extras. */
+function upstreamHeaders(referrer, extra) {
+    return { ...(referrer ? { Referer: referrer } : {}), ...extra };
+}
+/**
  * A link into this plugin's own `/plugin/web-links/segment` route, standing
  * in for a real relative URI (a segment, an init section, a variant
  * playlist) inside a rewritten HLS playlist -- see `rewritePlaylist`.
@@ -140,10 +189,13 @@ function resolveEndpoint(scraperId, resolveId, resolveKind, query, sessionId) {
  * fetcher on every network without this code ever having to know what
  * that prefix is.
  */
-function segmentEndpoint(absoluteUrl, referrer) {
+function segmentEndpoint(absoluteUrl, referrer, headers) {
     const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
     if (referrer)
         params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    const hdr = encodeRelayHeaders(headers);
+    if (hdr)
+        params.set("hdr", hdr);
     return `segment?${params.toString()}`;
 }
 /**
@@ -155,10 +207,13 @@ function segmentEndpoint(absoluteUrl, referrer) {
  * plugin fetches and rewrites it itself rather than handing the browser a
  * bare proxied byte-stream. See the `/plugin/web-links/variant` route.
  */
-function variantEndpoint(absoluteUrl, referrer) {
+function variantEndpoint(absoluteUrl, referrer, headers) {
     const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
     if (referrer)
         params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    const hdr = encodeRelayHeaders(headers);
+    if (hdr)
+        params.set("hdr", hdr);
     return `variant?${params.toString()}`;
 }
 /**
@@ -177,11 +232,11 @@ function variantEndpoint(absoluteUrl, referrer) {
  * `variantEndpoint` instead, which fetches and rewrites it the same way,
  * recursively -- see the `/plugin/web-links/variant` route below.
  */
-function rewritePlaylist(text, baseUrl, referrer) {
+function rewritePlaylist(text, baseUrl, referrer, headers) {
     const proxied = (ref, variant) => {
         try {
             const absolute = new URL(ref, baseUrl).toString();
-            return variant ? variantEndpoint(absolute, referrer) : segmentEndpoint(absolute, referrer);
+            return variant ? variantEndpoint(absolute, referrer, headers) : segmentEndpoint(absolute, referrer, headers);
         }
         catch {
             return ref;
@@ -417,14 +472,10 @@ const createPlugin = (host, configDir) => {
                 if (!link)
                     return { status: 502, body: "could not resolve this link right now" };
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, ctx.client.session);
+                const relayHeaders = linkRelayHeaders(link);
                 let playlist;
                 try {
-                    const upstream = await fetchImpl(link.url, {
-                        headers: {
-                            ...(link.referrer ? { Referer: link.referrer } : {}),
-                            ...(link.userAgent ? { "User-Agent": link.userAgent } : {})
-                        }
-                    });
+                    const upstream = await fetchImpl(link.url, { headers: upstreamHeaders(link.referrer, relayHeaders) });
                     if (!upstream.ok)
                         return { status: 502, body: `upstream playlist fetch failed (${upstream.status})` };
                     playlist = await upstream.text();
@@ -436,7 +487,7 @@ const createPlugin = (host, configDir) => {
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, link.url, link.referrer)
+                    body: rewritePlaylist(playlist, link.url, link.referrer, relayHeaders)
                 };
             }
         },
@@ -456,12 +507,13 @@ const createPlugin = (host, configDir) => {
                     return { status: 400, body: "bad segment url" };
                 const encodedRef = String(ctx.query.get("ref") || "");
                 const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+                const relayHeaders = decodeRelayHeaders(String(ctx.query.get("hdr") || ""));
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, ctx.client.session);
                 const range = ctx.headers.range;
                 try {
                     const upstream = await fetchImpl(target, {
                         headers: {
-                            ...(referrer ? { Referer: referrer } : {}),
+                            ...upstreamHeaders(referrer, relayHeaders),
                             ...(typeof range === "string" ? { Range: range } : {})
                         }
                     });
@@ -524,10 +576,11 @@ const createPlugin = (host, configDir) => {
                     return { status: 400, body: "bad variant url" };
                 const encodedRef = String(ctx.query.get("ref") || "");
                 const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+                const relayHeaders = decodeRelayHeaders(String(ctx.query.get("hdr") || ""));
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, ctx.client.session);
                 let playlist;
                 try {
-                    const upstream = await fetchImpl(target, { headers: referrer ? { Referer: referrer } : {} });
+                    const upstream = await fetchImpl(target, { headers: upstreamHeaders(referrer, relayHeaders) });
                     if (!upstream.ok)
                         return { status: 502, body: `upstream variant fetch failed (${upstream.status})` };
                     playlist = await upstream.text();
@@ -539,7 +592,7 @@ const createPlugin = (host, configDir) => {
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, target, referrer)
+                    body: rewritePlaylist(playlist, target, referrer, relayHeaders)
                 };
             }
         }
