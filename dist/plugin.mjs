@@ -1,4 +1,5 @@
-import { loadScrapers, packageOf } from "./registry.mjs";
+import { readFileSync } from "node:fs";
+import { loadScrapers, packageOf, packageVersionOf } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
 import { initScraperConfig, scraperEnabled, setScraperEnabled } from "./scraper-config.mjs";
 import { forgetGithubSource, importScraperFromGithub, importScraperFromStoredSource, updateScraperById, initGithubImport, listGithubSources, rememberGithubSource } from "./github-import.mjs";
@@ -255,7 +256,7 @@ const createPlugin = (host, configDir) => {
             name: scraper.name,
             enabled: scraperEnabled(scraper.id),
             sole: all.length === 1,
-            version: scraper.version,
+            version: packageVersionOf.get(scraper) ?? scraper.version,
             packageId: packageOf.get(scraper)
         }));
         const githubSources = listGithubSources();
@@ -526,7 +527,7 @@ const createPlugin = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.5.0",
+        version: pluginVersion(),
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
@@ -534,4 +535,14 @@ const createPlugin = (host, configDir) => {
         configDir
     };
 };
+/** Read from `plugin.json` beside the compiled file, the one place the
+ *  version is written, so the code can never claim a different one. */
+function pluginVersion() {
+    try {
+        return JSON.parse(readFileSync(new URL("./plugin.json", import.meta.url), "utf8")).version;
+    }
+    catch {
+        return undefined;
+    }
+}
 export default createPlugin;

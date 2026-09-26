@@ -42,6 +42,8 @@ let reloadCounter = 0;
 /** Which package directory each loaded scraper came from -- a package may
  *  hold several scrapers, and Update acts on the package. */
 export const packageOf = new WeakMap();
+/** The package manifest's version -- what Update compares, so what to show. */
+export const packageVersionOf = new WeakMap();
 export async function loadScrapers(configDir) {
     const cacheBust = ++reloadCounter;
     const scrapersDir = path.join(configDir, "scrapers");
@@ -74,6 +76,8 @@ export async function loadScrapers(configDir) {
                     continue;
                 }
                 packageOf.set(scraper, id);
+                if (typeof manifest.version === "string")
+                    packageVersionOf.set(scraper, manifest.version);
                 scrapers.push(scraper);
             }
         }
