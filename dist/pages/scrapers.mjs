@@ -1,4 +1,6 @@
 export function importSummary(result) {
+    if (result.upToDate)
+        return `${result.id ? `${result.id}: ` : ""}no update available${result.version ? ` (v${result.version} is the latest)` : ""}.`;
     if (result.error)
         return `${result.id ? `${result.id}: ` : ""}${result.error}`;
     if (result.updated)
@@ -18,7 +20,7 @@ export function scrapersPage(host, client, signedIn, rows, githubSources = [], n
         return `<li class="railrow${row.enabled ? "" : " railoff"}">
 <span class="railname">${escape(row.name)}${row.version ? ` <span class="railsay">v${escape(row.version)}</span>` : ""}</span>
 <span class="railsay">${escape(row.id)}</span>
-<span class="railacts">${toggle}</span>
+<span class="railacts">${row.packageId ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-update"))}" style="display:inline"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Update</button></form>` : ""}${toggle}</span>
 </li>`;
     })
         .join("\n");

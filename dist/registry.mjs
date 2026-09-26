@@ -39,6 +39,9 @@ import path from "node:path";
  * successful import or explicit "Reload sources").
  */
 let reloadCounter = 0;
+/** Which package directory each loaded scraper came from -- a package may
+ *  hold several scrapers, and Update acts on the package. */
+export const packageOf = new WeakMap();
 export async function loadScrapers(configDir) {
     const cacheBust = ++reloadCounter;
     const scrapersDir = path.join(configDir, "scrapers");
@@ -70,6 +73,7 @@ export async function loadScrapers(configDir) {
                     console.warn(`[web-links] ${id} exports a scraper whose id "${scraper.id}" is already loaded, skipping that one`);
                     continue;
                 }
+                packageOf.set(scraper, id);
                 scrapers.push(scraper);
             }
         }
