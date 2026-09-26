@@ -72,8 +72,8 @@ export interface VpnStatus {
  *  stremio-tv for the full surface. */
 export interface PluginHost {
     requestVpnCapability(pluginId: string, session?: unknown): Promise<VpnCapability>;
-    vpnBadge(status: VpnStatus | null): string;
-    vpnSheet(status: VpnStatus | null, action: string, back: string): string;
+    vpnBadge(status: VpnStatus | null, scope?: "live" | "links"): string;
+    vpnSheet(status: VpnStatus | null, action: string, back: string, scope?: "live" | "links"): string;
     render: {
         escape(value: unknown): string;
         page(options: { title: string; body: string }): string;

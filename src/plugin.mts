@@ -1,6 +1,7 @@
 import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
 import type { WebLink, WebLinkQuery, WebLinkScraper } from "./scraper.mjs";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { loadScrapers, packageOf, packageVersionOf } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
 import { initScraperConfig, scraperEnabled, setScraperEnabled } from "./scraper-config.mjs";
@@ -299,7 +300,6 @@ const createPlugin: PluginFactory = (host, configDir) => {
             id: scraper.id,
             name: scraper.name,
             enabled: scraperEnabled(scraper.id),
-            sole: all.length === 1,
             version: packageVersionOf.get(scraper) ?? scraper.version,
             packageId: packageOf.get(scraper)
         }));
@@ -407,6 +407,25 @@ const createPlugin: PluginFactory = (host, configDir) => {
                 } catch (cause) {
                     return sendScrapersPage(ctx, { text: `${id}: ${cause instanceof Error ? cause.message : String(cause)}`, ok: false });
                 }
+            }
+        },
+        {
+            method: "POST",
+            path: "/plugin/web-links/scraper-delete",
+            async handle(ctx) {
+                const id = String(ctx.form.get("id") || "");
+
+                // The id names a directory, so only a plain package id is accepted.
+                if (/^[a-z0-9-]{1,64}$/.test(id)) {
+                    for (const scraper of await scrapersPromise) {
+                        if (packageOf.get(scraper) === id) setScraperEnabled(scraper.id, true);
+                    }
+
+                    rmSync(join(configDir, "scrapers", id), { recursive: true, force: true });
+                    scrapersPromise = loadScrapers(configDir);
+                }
+
+                return redirect(ctx.client, "/plugin/web-links");
             }
         },
         {

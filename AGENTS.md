@@ -25,3 +25,7 @@ The scrapers page has an **Update** button per scraper, acting on its *package* 
 ## Reloading a `.cjs` scraper needs its `require` cache cleared
 
 `loadScrapers` busts ESM caching with `?reload=N`, which does nothing for a CommonJS bundle: `require`'s cache is keyed by path. Without `forgetCachedModules` an Update replaced the files and the running process kept the old code -- the page listed the old version and, worse, ran the old scraper -- until a restart. `test/registry.mjs` loads a `.cjs` package, rewrites it and asserts the second load is the new one.
+
+## Enable, disable and delete a scraper
+
+Each scraper row has **Update**, **Disable/Enable** and **Delete**. There is no "only source configured" lock any more: a plugin with every scraper off simply finds no web links. Delete acts on the whole *package* (`<pluginsDir>/web-links/data/scrapers/<pkg>/`), because a package can hold several scrapers; the confirmation says so, the id is checked against `[a-z0-9-]` before it is joined into a path, and each scraper's off-switch is reset so a later re-import of the same id starts enabled.
