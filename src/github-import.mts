@@ -218,6 +218,8 @@ export interface ScraperImportResult {
     id?: string;
     version?: string;
     updated: boolean;
+    /** Read fine, and nothing newer than what is installed -- not a failure. */
+    upToDate?: boolean;
     fileCount: number;
     error?: string;
 }
@@ -229,7 +231,7 @@ export interface ScraperImportResult {
  * only when `versionSupersedes` says this is a real update, or the id is
  * new.
  */
-export async function importScraperFromGithub(configDir: string, owner: string, repo: string, token: string): Promise<ScraperImportResult> {
+export async function importScraperFromGithub(configDir: string, owner: string, repo: string, token: string, expectId?: string): Promise<ScraperImportResult> {
     const files = await listDistFiles(owner, repo, token);
 
     if (!files.length) return { updated: false, fileCount: 0, error: "no files in dist/ on that branch" };
@@ -260,6 +262,11 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
         return { updated: false, fileCount: 0, error: "scraper.json is missing \"entry\"" };
     }
 
+    // A guessed repository must hold the package it was guessed for.
+    if (expectId && manifest.id !== expectId) {
+        return { updated: false, fileCount: 0, error: `${owner}/${repo} holds scraper package "${manifest.id}", not "${expectId}"` };
+    }
+
     const scraperRoot = join(configDir, "scrapers", manifest.id);
     const existingVersion = readInstalledVersion(scraperRoot);
 
@@ -268,6 +275,7 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
             id: manifest.id,
             version: manifest.version,
             updated: false,
+            upToDate: true,
             fileCount: files.length,
             error: existingVersion
                 ? `already have v${existingVersion}${manifest.version ? `, this is v${manifest.version}` : " (this build has no version)"}`
@@ -300,6 +308,8 @@ export async function importScraperFromGithub(configDir: string, owner: string, 
 
         rmSync(scraperRoot, { recursive: true, force: true });
         renameSync(stagingDir, scraperRoot);
+        // Where this package came from, so its Update button never has to guess.
+        writeFileSync(join(scraperRoot, ".source.json"), JSON.stringify({ owner, repo }));
 
         return { id: manifest.id, version: manifest.version, updated: true, fileCount: files.length };
     } catch (cause) {
@@ -332,4 +342,71 @@ export async function importScraperFromStoredSource(configDir: string, owner: st
     const source = findSource(owner, repo);
     if (!source) return { updated: false, fileCount: 0, error: "that source is not configured" };
     return importScraperFromGithub(configDir, source.owner, source.repo, source.token);
+}
+
+/**
+ * Scraper repositories that are known to publish packages for this plugin,
+ * tried for a package whose own source was never recorded. A package copied
+ * in by hand, or installed before `.source.json` existed, has no other way
+ * to say where it came from, and there is no naming convention to infer it
+ * from (`cinejoy` lives in `stremio-tv-plugin-web-scraper`). Each guess is
+ * checked against the package id in the fetched manifest.
+ */
+const DEFAULT_SCRAPER_REPOS: GithubSource[] = [{ owner: "gauravsuman007", repo: "stremio-tv-plugin-web-scraper" }];
+
+/**
+ * Update one installed scraper package. Uses its recorded source; without one,
+ * tries every remembered source and then the default repositories, and pins
+ * whichever one turns out to hold this package.
+ */
+export async function updateScraperById(configDir: string, id: string): Promise<ScraperImportResult> {
+    ensureSourcesLoaded();
+
+    const scraperRoot = join(configDir, "scrapers", id);
+    let known: GithubSource | undefined;
+
+    try {
+        const parsed = JSON.parse(readFileSync(join(scraperRoot, ".source.json"), "utf8")) as Partial<GithubSource>;
+        if (typeof parsed.owner === "string" && typeof parsed.repo === "string") known = { owner: parsed.owner, repo: parsed.repo };
+    } catch {
+        /* none recorded */
+    }
+
+    const candidates: StoredSource[] = [];
+    const add = (owner: string, repo: string) => {
+        if (candidates.some((c) => keyOf(c.owner, c.repo) === keyOf(owner, repo))) return;
+        candidates.push({ owner, repo, token: findSource(owner, repo)?.token || sources.find((s) => s.owner.toLowerCase() === owner.toLowerCase() && s.token)?.token || "" });
+    };
+
+    if (known) add(known.owner, known.repo);
+    else {
+        for (const s of sources) add(s.owner, s.repo);
+        for (const d of DEFAULT_SCRAPER_REPOS) add(d.owner, d.repo);
+    }
+
+    let last: ScraperImportResult = { updated: false, fileCount: 0, error: "no repository to check" };
+
+    for (const c of candidates) {
+        const result = await importScraperFromGithub(configDir, c.owner, c.repo, c.token, id).catch((cause): ScraperImportResult => ({
+            updated: false,
+            fileCount: 0,
+            error: cause instanceof Error ? cause.message : String(cause)
+        }));
+
+        if (result.updated || result.upToDate) {
+            rememberGithubSource(c.owner, c.repo, c.token);
+            try {
+                writeFileSync(join(scraperRoot, ".source.json"), JSON.stringify({ owner: c.owner, repo: c.repo }));
+            } catch {
+                /* remembered above regardless */
+            }
+            return result;
+        }
+        last = result;
+    }
+
+    return {
+        ...last,
+        error: `no GitHub repository found for "${id}" (tried ${candidates.map((c) => `${c.owner}/${c.repo}`).join(", ") || "none"}). ${last.error ?? ""} Use Import from GitHub below.`
+    };
 }

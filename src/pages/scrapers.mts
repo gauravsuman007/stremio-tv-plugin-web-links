@@ -7,6 +7,8 @@ export interface ScraperRow {
     enabled: boolean;
     sole: boolean;
     version?: string;
+    /** The package directory it was loaded from -- what Update acts on. */
+    packageId?: string;
 }
 
 export interface GithubSourceRow extends GithubSource {
@@ -17,10 +19,12 @@ export interface ImportSummary {
     id?: string;
     version?: string;
     updated: boolean;
+    upToDate?: boolean;
     error?: string;
 }
 
 export function importSummary(result: ImportSummary): string {
+    if (result.upToDate) return `${result.id ? `${result.id}: ` : ""}no update available${result.version ? ` (v${result.version} is the latest)` : ""}.`;
     if (result.error) return `${result.id ? `${result.id}: ` : ""}${result.error}`;
     if (result.updated) return `Installed ${result.id}${result.version ? ` v${result.version}` : ""}.`;
     return "Nothing to import.";
@@ -50,7 +54,7 @@ export function scrapersPage(
             return `<li class="railrow${row.enabled ? "" : " railoff"}">
 <span class="railname">${escape(row.name)}${row.version ? ` <span class="railsay">v${escape(row.version)}</span>` : ""}</span>
 <span class="railsay">${escape(row.id)}</span>
-<span class="railacts">${toggle}</span>
+<span class="railacts">${row.packageId ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-update"))}" style="display:inline"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Update</button></form>` : ""}${toggle}</span>
 </li>`;
         })
         .join("\n");

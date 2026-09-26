@@ -1,12 +1,13 @@
 import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
 import type { WebLink, WebLinkQuery, WebLinkScraper } from "./scraper.mjs";
-import { loadScrapers } from "./registry.mjs";
+import { loadScrapers, packageOf } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
 import { initScraperConfig, scraperEnabled, setScraperEnabled } from "./scraper-config.mjs";
 import {
     forgetGithubSource,
     importScraperFromGithub,
     importScraperFromStoredSource,
+    updateScraperById,
     initGithubImport,
     listGithubSources,
     rememberGithubSource
@@ -298,7 +299,8 @@ const createPlugin: PluginFactory = (host, configDir) => {
             name: scraper.name,
             enabled: scraperEnabled(scraper.id),
             sole: all.length === 1,
-            version: scraper.version
+            version: scraper.version,
+            packageId: packageOf.get(scraper)
         }));
         const githubSources: GithubSourceRow[] = listGithubSources();
         const signedIn = Boolean((ctx.client as { session?: { authKey?: string } }).session?.authKey);
@@ -356,7 +358,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
                     if (result.updated) scrapersPromise = loadScrapers(configDir);
 
-                    return sendScrapersPage(ctx, { text: importSummary(result), ok: !result.error });
+                    return sendScrapersPage(ctx, { text: importSummary(result), ok: !result.error || Boolean(result.upToDate) });
                 } catch (cause) {
                     return sendScrapersPage(ctx, {
                         text: `Import from ${owner}/${repo} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -377,12 +379,32 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
                     if (result.updated) scrapersPromise = loadScrapers(configDir);
 
-                    return sendScrapersPage(ctx, { text: importSummary(result), ok: !result.error });
+                    return sendScrapersPage(ctx, { text: importSummary(result), ok: !result.error || Boolean(result.upToDate) });
                 } catch (cause) {
                     return sendScrapersPage(ctx, {
                         text: `Check for updates on ${owner}/${repo} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
                         ok: false
                     });
+                }
+            }
+        },
+        {
+            method: "POST",
+            path: "/plugin/web-links/scraper-update",
+            async handle(ctx) {
+                const id = String(ctx.form.get("id") || "");
+
+                try {
+                    const result = await updateScraperById(configDir, id);
+
+                    if (result.updated) scrapersPromise = loadScrapers(configDir);
+
+                    return sendScrapersPage(ctx, {
+                        text: result.updated || result.upToDate ? importSummary({ ...result, id }) : `${id}: ${result.error || "update failed"}`,
+                        ok: result.updated || Boolean(result.upToDate)
+                    });
+                } catch (cause) {
+                    return sendScrapersPage(ctx, { text: `${id}: ${cause instanceof Error ? cause.message : String(cause)}`, ok: false });
                 }
             }
         },
