@@ -1,10 +1,12 @@
 export function importSummary(result) {
+    if (result.summary)
+        return `${result.summary}.`;
     if (result.upToDate)
         return `${result.id ? `${result.id}: ` : ""}no update available${result.version ? ` (v${result.version} is the latest)` : ""}.`;
     if (result.error)
         return `${result.id ? `${result.id}: ` : ""}${result.error}`;
     if (result.updated)
-        return `Installed ${result.id}${result.version ? ` v${result.version}` : ""}.`;
+        return `${result.replaced ? "Updated" : "Installed"} ${result.id}${result.version ? ` v${result.version}` : ""}.`;
     return "Nothing to import.";
 }
 /** Mirrors the Live TV plugin's own `/tv/scrapers` page -- same layout,
@@ -80,6 +82,6 @@ ${sourcesList ? `<ul class="rails">\n${sourcesList}\n</ul>` : ""}
 <h3 class="lead">Dropping one in by hand</h3>
 <p class="hint">A scraper is a small package, not a single file this page accepts from a form &mdash; it runs with the same reach as the rest of this service. Build one against <code>templates/scraper-template.mts</code> in this plugin's own repository, compile it (the template's header has the exact command), and copy the resulting <code>dist/</code> tree to <code>&lt;pluginsDir&gt;/web-links/data/scrapers/&lt;id&gt;/</code> on the mounted data volume (so <code>scraper.json</code> lands at <code>.../&lt;id&gt;/scraper.json</code>). Press &ldquo;Reload sources&rdquo; above, or restart, to pick it up -- no image rebuild, no redeploy.</p>
 <h3 class="lead">Versioning</h3>
-<p class="hint">A scraper's <code>scraper.json</code> may set a <code>version</code> (dot-separated numbers, e.g. <code>1.2.0</code>). Importing from GitHub only ever replaces a scraper already running with a strictly newer version. &ldquo;Reload sources&rdquo; above is different: it re-reads the dropped-in directory as-is, no version check, because a file that landed there was already a deliberate choice by whoever copied it in.</p>`
+<p class="hint">A scraper's <code>scraper.json</code> may set a <code>version</code> (dot-separated numbers, e.g. <code>1.2.0</code>). Importing from GitHub installs any package the repository has that is not installed yet, replaces one only when its version is strictly newer (or, at the same version, when its files changed), and leaves the rest alone. A repository may hold several packages, one per <code>dist/&lt;name&gt;/</code> folder. &ldquo;Reload sources&rdquo; above is different: it re-reads the dropped-in directory as-is, no version check, because a file that landed there was already a deliberate choice by whoever copied it in.</p>`
     });
 }
