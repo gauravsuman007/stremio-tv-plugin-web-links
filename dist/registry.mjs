@@ -61,12 +61,16 @@ export async function loadScrapers(configDir) {
                 continue;
             }
             const mod = await import(`${pathToFileURL(path.join(scraperDir, manifest.entry)).href}?reload=${cacheBust}`);
-            const scraper = unwrapScraper(mod);
-            if (isWebLinkScraper(scraper)) {
-                scrapers.push(scraper);
-            }
-            else {
+            const found = unwrapScrapers(mod);
+            if (!found.length) {
                 console.warn(`[web-links] ${id} does not export a WebLinkScraper (needs id, name, search()), skipping`);
+            }
+            for (const scraper of found) {
+                if (scrapers.some((existing) => existing.id === scraper.id)) {
+                    console.warn(`[web-links] ${id} exports a scraper whose id "${scraper.id}" is already loaded, skipping that one`);
+                    continue;
+                }
+                scrapers.push(scraper);
             }
         }
         catch (cause) {
@@ -76,20 +80,28 @@ export async function loadScrapers(configDir) {
     return scrapers;
 }
 /**
+ * A package's entry may export ONE scraper or SEVERAL: a default export that
+ * is a `WebLinkScraper`, an array of them, or a named `scrapers` array.
+ * Entries that are not scrapers are dropped individually, so one malformed
+ * entry never costs the package's others.
+ *
  * A scraper compiled to `.mjs` exports a plain ESM default. One compiled to
  * `.cjs` (see the module doc's note on why that's sometimes necessary) goes
  * through Node's CJS/ESM interop first, which -- for a bundler-emitted
  * `{ __esModule: true, default: X }` shape -- leaves `X` one level deeper
- * than a native ESM default (`mod.default.default`, not `mod.default`).
- * This tries the ESM shape first, the CJS-interop shape second.
+ * than a native ESM default (`mod.default.default`, not `mod.default`), and
+ * a named export is then only reachable on `mod.default` too. This tries the
+ * ESM shape first, the CJS-interop shape second.
  */
-function unwrapScraper(mod) {
-    if (isWebLinkScraper(mod.default))
-        return mod.default;
-    const nested = mod.default?.default;
-    if (isWebLinkScraper(nested))
-        return nested;
-    return mod.default;
+function unwrapScrapers(mod) {
+    const inner = mod.default?.default;
+    const nestedNamed = mod.default?.scrapers;
+    for (const candidate of [mod.default, mod.scrapers, inner, nestedNamed]) {
+        const list = (Array.isArray(candidate) ? candidate : [candidate]).filter(isWebLinkScraper);
+        if (list.length)
+            return list;
+    }
+    return [];
 }
 function isWebLinkScraper(value) {
     if (!value || typeof value !== "object")
