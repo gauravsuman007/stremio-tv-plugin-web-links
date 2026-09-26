@@ -89,10 +89,16 @@ interface WebLink {
      *  list time, so the URL the user gets is always fresh. */
     resolveId?: string;
     /** Only meaningful alongside `resolveId`. `"file"` (default) redirects
-     *  straight to the resolved URL. `"hls"` means it's an `.m3u8` playlist
-     *  -- the host fetches and rewrites its relative URIs to absolute
-     *  before serving it, since a redirect would leave the client fetching
-     *  the playlist from a URL those relative paths don't resolve against. */
+     *  straight to the resolved URL. `"hls"` means it's an `.m3u8` playlist -- either a plain media
+     *  playlist or a MASTER with several renditions (return the master
+     *  itself, not one flattened variant, and the player offers the viewer a
+     *  resolution picker). The host fetches it, and recursively every
+     *  variant playlist inside a master, and routes every relative URI
+     *  (variants, segments, init sections, keys) back through itself:
+     *  same-origin, so the browser can read it, and through the VPN. It
+     *  serves the rewritten text directly rather than redirecting, since a
+     *  redirect would leave those relative paths resolving against nothing
+     *  real. */
     resolveKind?: "file" | "hls";
     quality?: string;
     title?: string;
@@ -120,6 +126,12 @@ interface WebLinkScraper {
      *  increase. Optional; an unversioned scraper is never known to be an
      *  update to anything. */
     version?: string;
+    /** Return ONE result per site, not one per mirror/server: list-time
+     *  should be cheap, and which mirror actually serves the video is
+     *  `resolve()`'s job -- have it try each in turn until one works, and
+     *  tag the single result with this scraper's name (e.g. title:
+     *  "Zootopia (2016) \u00b7 CineJoy") so its origin is visible. Order the
+     *  mirrors best-quality-first when the site says which are. */
     search(query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink[]>;
     /** Only needed if `search()` ever sets `resolveId` on a result -- turns
      *  that id back into the real, fresh link. Return `null` for "this one's

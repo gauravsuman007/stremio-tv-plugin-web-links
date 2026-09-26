@@ -49,12 +49,16 @@ export interface WebLink {
     resolveId?: string;
     /** Only meaningful alongside `resolveId`. `"file"` (the default) means
      *  the resolved `url` is a plain file the host can redirect straight to.
-     *  `"hls"` means it's an `.m3u8` playlist -- the host fetches it itself,
-     *  rewrites every relative URI inside to absolute (so it plays no
-     *  matter which URL the client actually fetched the playlist from), and
+     *  `"hls"` means it's an `.m3u8` playlist -- either a plain media
+     *  playlist or a MASTER with several renditions (return the master
+     *  itself, not one flattened variant, and the player offers the viewer a
+     *  resolution picker). The host fetches it, and recursively every
+     *  variant playlist inside a master, and routes every relative URI
+     *  (variants, segments, init sections, keys) back through itself:
+     *  same-origin, so the browser can read it, and through the VPN. It
      *  serves the rewritten text directly rather than redirecting, since a
-     *  redirect would hand the client a playlist full of paths that no
-     *  longer resolve against anything real. */
+     *  redirect would leave those relative paths resolving against nothing
+     *  real. */
     resolveKind?: "file" | "hls";
     /** Free-text quality label, e.g. "1080p WEB-DL" -- shown to the user,
      *  never parsed or trusted by the host. */

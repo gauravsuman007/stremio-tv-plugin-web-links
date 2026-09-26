@@ -171,29 +171,61 @@ function segmentEndpoint(absoluteUrl: string, referrer: string | undefined): str
 }
 
 /**
- * Rewrites every relative URI in an HLS playlist into a same-origin
- * `segmentEndpoint()` link, resolved against `baseUrl` (the real URL the
- * playlist was actually fetched from) before being wrapped. Handles plain
- * URI lines (segments, variant playlists) and the `URI="..."` attribute on
- * tag lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- both are a real fetch a
- * player will make, and both need proxying for the same reason.
+ * The same idea as `segmentEndpoint`, for a MASTER playlist's own variant
+ * lines -- each one names another PLAYLIST (a `.m3u8`, one per rendition),
+ * not a media segment, and needs the same recursive treatment
+ * `rewritePlaylist` gives the top-level one: its own relative segment/init
+ * references have to resolve correctly too, which only happens if this
+ * plugin fetches and rewrites it itself rather than handing the browser a
+ * bare proxied byte-stream. See the `/plugin/web-links/variant` route.
+ */
+function variantEndpoint(absoluteUrl: string, referrer: string | undefined): string {
+    const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
+    if (referrer) params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    return `variant?${params.toString()}`;
+}
+
+/**
+ * Rewrites every relative URI in an HLS playlist into a same-origin link,
+ * resolved against `baseUrl` (the real URL the playlist was actually
+ * fetched from) before being wrapped. Handles plain URI lines (segments,
+ * or a MASTER's variant playlists) and the `URI="..."` attribute on tag
+ * lines (`#EXT-X-MAP`, `#EXT-X-KEY`, ...) -- all three are a real fetch a
+ * player will make, and all three need proxying for the same reason.
+ *
+ * A MASTER PLAYLIST'S OWN VARIANT LINES ARE NOT SEGMENTS.
+ * A line straight after `#EXT-X-STREAM-INF` names another PLAYLIST, one
+ * per resolution -- routing it through `segmentEndpoint` would hand the
+ * browser that nested playlist's raw bytes with ITS OWN relative
+ * references left unrewritten and therefore unreachable. Route it through
+ * `variantEndpoint` instead, which fetches and rewrites it the same way,
+ * recursively -- see the `/plugin/web-links/variant` route below.
  */
 function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined): string {
-    const proxied = (ref: string): string => {
+    const proxied = (ref: string, variant: boolean): string => {
         try {
-            return segmentEndpoint(new URL(ref, baseUrl).toString(), referrer);
+            const absolute = new URL(ref, baseUrl).toString();
+            return variant ? variantEndpoint(absolute, referrer) : segmentEndpoint(absolute, referrer);
         } catch {
             return ref;
         }
     };
 
+    let nextIsVariant = false;
+
     return text
         .split(/\r?\n/)
         .map((line) => {
             if (!line) return line;
-            if (line.startsWith("#")) return line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${proxied(uri)}"`);
+            if (line.startsWith("#")) {
+                const rewritten = line.replace(/URI="([^"]+)"/g, (_m, uri) => `URI="${proxied(uri, false)}"`);
+                nextIsVariant = line.startsWith("#EXT-X-STREAM-INF");
+                return rewritten;
+            }
             const trimmed = line.trim();
-            return trimmed ? proxied(trimmed) : line;
+            const variant = nextIsVariant;
+            nextIsVariant = false;
+            return trimmed ? proxied(trimmed, variant) : line;
         })
         .join("\n");
 }
@@ -450,6 +482,53 @@ const createPlugin: PluginFactory = (host, configDir) => {
                     return { status: 502, body: "could not fetch segment" };
                 }
             }
+        },
+        {
+            /*
+                A MASTER PLAYLIST'S OWN VARIANT, FETCHED AND REWRITTEN THE
+                SAME WAY THE TOP-LEVEL PLAYLIST WAS.
+
+                Reached only from a `variantEndpoint()` link inside a
+                rewritten master (see `rewritePlaylist`) -- never handed out
+                directly. Sibling of `/plugin/web-links/segment` in the same
+                directory, on purpose: a relative segment reference INSIDE
+                the rewritten body below resolves against THIS route's own
+                URL, landing back on `segment` correctly without either
+                route needing to know the other's shape.
+            */
+            method: "GET",
+            path: "/plugin/web-links/variant",
+            async handle(ctx) {
+                const encodedUrl = String(ctx.query.get("u") || "");
+                let target: string;
+                try {
+                    target = Buffer.from(encodedUrl, "base64url").toString("utf8");
+                } catch {
+                    return { status: 400, body: "bad variant url" };
+                }
+                if (!/^https?:\/\//.test(target)) return { status: 400, body: "bad variant url" };
+
+                const encodedRef = String(ctx.query.get("ref") || "");
+                const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+
+                const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
+
+                let playlist: string;
+                try {
+                    const upstream = await fetchImpl(target, { headers: referrer ? { Referer: referrer } : {} });
+                    if (!upstream.ok) return { status: 502, body: `upstream variant fetch failed (${upstream.status})` };
+                    playlist = await upstream.text();
+                } catch (cause) {
+                    console.warn(`[web-links] could not fetch variant ${target}:`, cause);
+                    return { status: 502, body: "could not fetch the variant" };
+                }
+
+                return {
+                    status: 200,
+                    headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
+                    body: rewritePlaylist(playlist, target, referrer)
+                };
+            }
         }
     ];
 
@@ -487,7 +566,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.4.1",
+        version: "0.5.0",
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
