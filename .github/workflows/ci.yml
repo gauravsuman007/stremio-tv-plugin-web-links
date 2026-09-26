@@ -10,7 +10,7 @@ jobs:
     build:
         runs-on: ubuntu-latest
         permissions:
-            contents: read
+            contents: write
 
         steps:
             - uses: actions/checkout@v4
@@ -29,19 +29,23 @@ jobs:
 
             - run: npm test
 
-            # THE GATE dist/ MUST PASS.
+            # dist/ IS BUILT HERE, NEVER ON A DEVELOPER'S MACHINE.
             #
-            # stremio-tv's plugin importer pulls the COMPILED `dist/plugin.mjs`
-            # + `plugin.json` straight from this repo's `dist/` folder on
-            # GitHub -- there is no build step on the stremio-tv side. That
-            # only works if what is committed to `dist/` on `main` is exactly
-            # what a fresh build produces. This never auto-commits the diff
-            # back (that would be a push loop); a contributor who forgot to
-            # rebuild before committing gets caught here instead of shipping
-            # a stale plugin.
-            - name: Verify dist/ is up to date with a fresh build
+            # stremio-tv imports the COMPILED dist/ straight from this
+            # repo's main branch, so it has to be committed -- but by this
+            # job, from a clean build. Pull requests only prove the build
+            # works. The commit carries [skip ci], and a push made with
+            # GITHUB_TOKEN does not retrigger workflows anyway, so there
+            # is no loop.
+            - name: Commit the fresh dist/
+              if: github.event_name == 'push'
               run: |
-                  if ! git diff --exit-code -- dist/; then
-                    echo "::error::dist/ is out of date -- run 'npm run build' and commit the result before pushing."
-                    exit 1
+                  git add -A dist/
+                  if git diff --cached --quiet; then
+                    echo "dist/ already matches a fresh build"
+                    exit 0
                   fi
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git commit -m "Build dist/ [skip ci]"
+                  git push
