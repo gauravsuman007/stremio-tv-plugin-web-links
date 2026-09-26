@@ -1,6 +1,7 @@
 import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
 import type { WebLink, WebLinkQuery, WebLinkScraper } from "./scraper.mjs";
-import { loadScrapers, packageOf } from "./registry.mjs";
+import { readFileSync } from "node:fs";
+import { loadScrapers, packageOf, packageVersionOf } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
 import { initScraperConfig, scraperEnabled, setScraperEnabled } from "./scraper-config.mjs";
 import {
@@ -299,7 +300,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
             name: scraper.name,
             enabled: scraperEnabled(scraper.id),
             sole: all.length === 1,
-            version: scraper.version,
+            version: packageVersionOf.get(scraper) ?? scraper.version,
             packageId: packageOf.get(scraper)
         }));
         const githubSources: GithubSourceRow[] = listGithubSources();
@@ -588,7 +589,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
     return {
         id: PLUGIN_ID,
         name: "Web Links",
-        version: "0.5.0",
+        version: pluginVersion(),
         apiVersion: "1.0.0",
         routes: () => routes,
         extraStreamsFor,
@@ -596,5 +597,15 @@ const createPlugin: PluginFactory = (host, configDir) => {
         configDir
     };
 };
+
+/** Read from `plugin.json` beside the compiled file, the one place the
+ *  version is written, so the code can never claim a different one. */
+function pluginVersion(): string | undefined {
+    try {
+        return JSON.parse(readFileSync(new URL("./plugin.json", import.meta.url), "utf8")).version;
+    } catch {
+        return undefined;
+    }
+}
 
 export default createPlugin;

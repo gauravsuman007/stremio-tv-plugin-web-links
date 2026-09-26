@@ -17,3 +17,7 @@ A scraper repo's `dist/` is one package (`scraper.json` -> `scrapers/<id>/`, one
 ## Every installed scraper package can be updated, even one with no recorded source
 
 The scrapers page has an **Update** button per scraper, acting on its *package* (`packageOf` in `registry.mts` maps a loaded scraper to its directory). A successful import writes `<pkg>/.source.json` (`{owner, repo}`) so the button knows where to look. A package copied in by hand, or installed before that file existed, has none, so `updateScraperById` tries every remembered source and then `DEFAULT_SCRAPER_REPOS` (there is no naming convention to infer a scraper repo from), passes the package id as `expectId` so a wrong repository cannot install some other package, and pins the one that matches. "No update available" is `ScraperImportResult.upToDate`, never parsed from the error text.
+
+## The version is written once
+
+`plugin.json` is the only place a plugin's version lives; `plugin.mts` reads it from beside the compiled file, and stremio-tv shows the manifest's version ahead of the code's. A scraper package's version shown on the scrapers page is likewise the package's `scraper.json`, not whatever the scraper reports about itself (`packageVersionOf`). A literal in source is what made a bumped version keep showing the old number.

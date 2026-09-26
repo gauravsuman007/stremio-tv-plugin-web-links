@@ -45,6 +45,8 @@ let reloadCounter = 0;
 /** Which package directory each loaded scraper came from -- a package may
  *  hold several scrapers, and Update acts on the package. */
 export const packageOf = new WeakMap<WebLinkScraper, string>();
+/** The package manifest's version -- what Update compares, so what to show. */
+export const packageVersionOf = new WeakMap<WebLinkScraper, string>();
 
 export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]> {
     const cacheBust = ++reloadCounter;
@@ -64,6 +66,7 @@ export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]>
         try {
             const manifest = JSON.parse(readFileSync(path.join(scraperDir, "scraper.json"), "utf8")) as {
                 entry?: string;
+                version?: string;
             };
             if (!manifest.entry) {
                 console.warn(`[web-links] ${id}/scraper.json has no "entry", skipping`);
@@ -82,6 +85,7 @@ export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]>
                     continue;
                 }
                 packageOf.set(scraper, id);
+                if (typeof manifest.version === "string") packageVersionOf.set(scraper, manifest.version);
                 scrapers.push(scraper);
             }
         } catch (cause) {
