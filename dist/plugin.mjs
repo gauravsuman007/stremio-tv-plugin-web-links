@@ -294,12 +294,11 @@ const createPlugin = (host, configDir) => {
             path: "/plugin/web-links/github-import",
             async handle(ctx) {
                 const combo = String(ctx.form.get("repo") || "").trim();
-                const slash = combo.indexOf("/");
-                if (slash < 1 || slash === combo.length - 1) {
+                const parsed = parseGithubRepo(combo);
+                if (!parsed) {
                     return sendScrapersPage(ctx, { text: `"${combo}" is not an "owner/repo" address.`, ok: false });
                 }
-                const owner = combo.slice(0, slash);
-                const repo = combo.slice(slash + 1);
+                const { owner, repo } = parsed;
                 const token = String(ctx.form.get("token") || "").trim();
                 const source = rememberGithubSource(owner, repo, token);
                 try {
@@ -563,3 +562,15 @@ function pluginVersion() {
     }
 }
 export default createPlugin;
+/** Accepts `owner/repo` and the forms people paste instead: a full
+ *  https://github.com/owner/repo[.git][/tree/main/...] URL, `github.com/owner/repo`,
+ *  or git@github.com:owner/repo.git. */
+export function parseGithubRepo(input) {
+    const path = input
+        .trim()
+        .replace(/^git@github\.com:/i, "")
+        .replace(/^(https?:\/\/)?(www\.)?github\.com\//i, "");
+    const [owner, rawRepo] = path.split(/[/?#]/);
+    const repo = (rawRepo || "").replace(/\.git$/i, "");
+    return owner && repo && /^[\w.-]+$/.test(owner) && /^[\w.-]+$/.test(repo) ? { owner, repo } : null;
+}
