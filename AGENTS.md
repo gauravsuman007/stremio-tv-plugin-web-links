@@ -21,3 +21,7 @@ The scrapers page has an **Update** button per scraper, acting on its *package* 
 ## The version is written once
 
 `plugin.json` is the only place a plugin's version lives; `plugin.mts` reads it from beside the compiled file, and stremio-tv shows the manifest's version ahead of the code's. A scraper package's version shown on the scrapers page is likewise the package's `scraper.json`, not whatever the scraper reports about itself (`packageVersionOf`). A literal in source is what made a bumped version keep showing the old number.
+
+## Reloading a `.cjs` scraper needs its `require` cache cleared
+
+`loadScrapers` busts ESM caching with `?reload=N`, which does nothing for a CommonJS bundle: `require`'s cache is keyed by path. Without `forgetCachedModules` an Update replaced the files and the running process kept the old code -- the page listed the old version and, worse, ran the old scraper -- until a restart. `test/registry.mjs` loads a `.cjs` package, rewrites it and asserts the second load is the new one.

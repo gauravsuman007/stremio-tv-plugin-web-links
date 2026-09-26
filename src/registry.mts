@@ -1,4 +1,5 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import type { WebLinkScraper } from "./scraper.mjs";
@@ -41,6 +42,32 @@ import type { WebLinkScraper } from "./scraper.mjs";
  * successful import or explicit "Reload sources").
  */
 let reloadCounter = 0;
+const requireCache = createRequire(import.meta.url).cache;
+
+/**
+ * THE `?reload=` QUERY DOES NOT BUST A `.cjs` SCRAPER
+ * -----------------------------------------------------
+ * The query makes Node treat the URL as a new ES module, but a CommonJS file
+ * is evaluated through `require`, whose cache is keyed by file PATH and
+ * ignores the query. So after an Update the files on disk were the new
+ * version while the process kept running -- and listing -- the old one (the
+ * page showed CineJoy v1.6.0 with 1.8.1 installed). Every cached module under
+ * the package's directory is dropped first, its own `node_modules` included.
+ */
+function forgetCachedModules(dir: string): void {
+    // The cache is keyed by real path, and a data volume may sit behind a symlink.
+    let real = dir;
+    try {
+        real = realpathSync(dir);
+    } catch {
+        /* fall back to the given path */
+    }
+    const prefix = real + path.sep;
+
+    for (const file of Object.keys(requireCache)) {
+        if (file.startsWith(prefix)) delete requireCache[file];
+    }
+}
 
 /** Which package directory each loaded scraper came from -- a package may
  *  hold several scrapers, and Update acts on the package. */
@@ -72,6 +99,8 @@ export async function loadScrapers(configDir: string): Promise<WebLinkScraper[]>
                 console.warn(`[web-links] ${id}/scraper.json has no "entry", skipping`);
                 continue;
             }
+
+            forgetCachedModules(scraperDir);
 
             const mod = await import(`${pathToFileURL(path.join(scraperDir, manifest.entry)).href}?reload=${cacheBust}`);
             const found = unwrapScrapers(mod);
