@@ -73,6 +73,12 @@ export interface WebLink {
     referrer?: string;
     /** Set when the target requires a specific User-Agent to serve the file. */
     userAgent?: string;
+    /** Extra request headers the target requires on every playlist and
+     *  segment fetch, beyond `referrer`/`userAgent` -- typically `Origin`,
+     *  which several CDNs demand alongside the Referer (a browser always
+     *  sends both). Only `Origin`, `Accept`, `Accept-Language` and `X-*`
+     *  headers are honoured; anything else is dropped by the relay. */
+    headers?: Record<string, string>;
 }
 
 /** What a scraper is given to make its own HTTP calls with. Deliberately a

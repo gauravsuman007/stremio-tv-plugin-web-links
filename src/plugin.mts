@@ -116,6 +116,54 @@ function resolveEndpoint(
 }
 
 /**
+ * Request headers a link can ask the relay to send upstream, besides
+ * Referer (`WebLink.referrer`). Some CDNs answer 403 to a Referer alone and
+ * serve once `Origin` matches too, as it always does from a browser. The
+ * names are an allowlist: the relay's URLs are reachable by anything that
+ * can reach the plugin, so it must not let them set Host, Cookie,
+ * Authorization and the like.
+ */
+const RELAY_HEADER_ALLOWED = /^(origin|accept|accept-language|user-agent|x-[a-z0-9-]+)$/i;
+const RELAY_HEADER_MAX = 8;
+const RELAY_HEADER_VALUE_MAX = 512;
+
+function cleanRelayHeaders(input: unknown): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!input || typeof input !== "object") return out;
+    for (const [name, value] of Object.entries(input as Record<string, unknown>)) {
+        if (Object.keys(out).length >= RELAY_HEADER_MAX) break;
+        if (typeof value !== "string" || value.length > RELAY_HEADER_VALUE_MAX) continue;
+        if (!RELAY_HEADER_ALLOWED.test(name) || /[\r\n]/.test(value)) continue;
+        out[name] = value;
+    }
+    return out;
+}
+
+/** What a link asks the relay to send besides Referer: its `headers`, plus its `userAgent`. */
+function linkRelayHeaders(link: { headers?: Record<string, string>; userAgent?: string }): Record<string, string> {
+    return cleanRelayHeaders({ ...link.headers, ...(link.userAgent ? { "User-Agent": link.userAgent } : {}) });
+}
+
+function encodeRelayHeaders(headers: Record<string, string> | undefined): string | undefined {
+    if (!headers || Object.keys(headers).length === 0) return undefined;
+    return Buffer.from(JSON.stringify(headers), "utf8").toString("base64url");
+}
+
+function decodeRelayHeaders(param: string): Record<string, string> {
+    if (!param) return {};
+    try {
+        return cleanRelayHeaders(JSON.parse(Buffer.from(param, "base64url").toString("utf8")));
+    } catch {
+        return {};
+    }
+}
+
+/** The headers for one upstream fetch: the Referer, then the allowed extras. */
+function upstreamHeaders(referrer: string | undefined, extra: Record<string, string>): Record<string, string> {
+    return { ...(referrer ? { Referer: referrer } : {}), ...extra };
+}
+
+/**
  * A link into this plugin's own `/plugin/web-links/segment` route, standing
  * in for a real relative URI (a segment, an init section, a variant
  * playlist) inside a rewritten HLS playlist -- see `rewritePlaylist`.
@@ -167,9 +215,11 @@ function resolveEndpoint(
  * fetcher on every network without this code ever having to know what
  * that prefix is.
  */
-function segmentEndpoint(absoluteUrl: string, referrer: string | undefined): string {
+function segmentEndpoint(absoluteUrl: string, referrer: string | undefined, headers?: Record<string, string>): string {
     const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
     if (referrer) params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    const hdr = encodeRelayHeaders(headers);
+    if (hdr) params.set("hdr", hdr);
     return `segment?${params.toString()}`;
 }
 
@@ -182,9 +232,11 @@ function segmentEndpoint(absoluteUrl: string, referrer: string | undefined): str
  * plugin fetches and rewrites it itself rather than handing the browser a
  * bare proxied byte-stream. See the `/plugin/web-links/variant` route.
  */
-function variantEndpoint(absoluteUrl: string, referrer: string | undefined): string {
+function variantEndpoint(absoluteUrl: string, referrer: string | undefined, headers?: Record<string, string>): string {
     const params = new URLSearchParams({ u: Buffer.from(absoluteUrl, "utf8").toString("base64url") });
     if (referrer) params.set("ref", Buffer.from(referrer, "utf8").toString("base64url"));
+    const hdr = encodeRelayHeaders(headers);
+    if (hdr) params.set("hdr", hdr);
     return `variant?${params.toString()}`;
 }
 
@@ -204,11 +256,11 @@ function variantEndpoint(absoluteUrl: string, referrer: string | undefined): str
  * `variantEndpoint` instead, which fetches and rewrites it the same way,
  * recursively -- see the `/plugin/web-links/variant` route below.
  */
-function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined): string {
+function rewritePlaylist(text: string, baseUrl: string, referrer: string | undefined, headers?: Record<string, string>): string {
     const proxied = (ref: string, variant: boolean): string => {
         try {
             const absolute = new URL(ref, baseUrl).toString();
-            return variant ? variantEndpoint(absolute, referrer) : segmentEndpoint(absolute, referrer);
+            return variant ? variantEndpoint(absolute, referrer, headers) : segmentEndpoint(absolute, referrer, headers);
         } catch {
             return ref;
         }
@@ -476,14 +528,10 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
 
+                const relayHeaders = linkRelayHeaders(link);
                 let playlist: string;
                 try {
-                    const upstream = await fetchImpl(link.url, {
-                        headers: {
-                            ...(link.referrer ? { Referer: link.referrer } : {}),
-                            ...(link.userAgent ? { "User-Agent": link.userAgent } : {})
-                        }
-                    });
+                    const upstream = await fetchImpl(link.url, { headers: upstreamHeaders(link.referrer, relayHeaders) });
                     if (!upstream.ok) return { status: 502, body: `upstream playlist fetch failed (${upstream.status})` };
                     playlist = await upstream.text();
                 } catch (cause) {
@@ -494,7 +542,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, link.url, link.referrer)
+                    body: rewritePlaylist(playlist, link.url, link.referrer, relayHeaders)
                 };
             }
         },
@@ -513,6 +561,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
                 const encodedRef = String(ctx.query.get("ref") || "");
                 const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+                const relayHeaders = decodeRelayHeaders(String(ctx.query.get("hdr") || ""));
 
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
                 const range = ctx.headers.range;
@@ -520,7 +569,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
                 try {
                     const upstream = await fetchImpl(target, {
                         headers: {
-                            ...(referrer ? { Referer: referrer } : {}),
+                            ...upstreamHeaders(referrer, relayHeaders),
                             ...(typeof range === "string" ? { Range: range } : {})
                         }
                     });
@@ -578,12 +627,13 @@ const createPlugin: PluginFactory = (host, configDir) => {
 
                 const encodedRef = String(ctx.query.get("ref") || "");
                 const referrer = encodedRef ? Buffer.from(encodedRef, "base64url").toString("utf8") : undefined;
+                const relayHeaders = decodeRelayHeaders(String(ctx.query.get("hdr") || ""));
 
                 const { fetch: fetchImpl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
 
                 let playlist: string;
                 try {
-                    const upstream = await fetchImpl(target, { headers: referrer ? { Referer: referrer } : {} });
+                    const upstream = await fetchImpl(target, { headers: upstreamHeaders(referrer, relayHeaders) });
                     if (!upstream.ok) return { status: 502, body: `upstream variant fetch failed (${upstream.status})` };
                     playlist = await upstream.text();
                 } catch (cause) {
@@ -594,7 +644,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
                 return {
                     status: 200,
                     headers: { "content-type": "application/vnd.apple.mpegurl", "cache-control": "no-store" },
-                    body: rewritePlaylist(playlist, target, referrer)
+                    body: rewritePlaylist(playlist, target, referrer, relayHeaders)
                 };
             }
         }
