@@ -9,3 +9,7 @@ stremio-tv's plugin importer (Settings > Plugins > Import from GitHub) reads the
 - So after pushing, `git pull` before your next commit; the bot's commit will be ahead of you.
 - `npm run build` locally is fine for trying something out; leave the resulting `dist/` changes uncommitted (`git checkout dist`).
 - A change is not live for stremio-tv until that bot commit exists **and** someone presses "Check for updates" on stremio-tv's plugins page. Nothing pulls on its own. Bump the version in `plugin.json` -- the importer only installs a real increase.
+
+## One package may ship several scrapers
+
+A scraper repo's `dist/` is one package (`scraper.json` -> `scrapers/<id>/`, one version), but its `entry` may export several `WebLinkScraper`s: a default export that is an array, or a named `scrapers` array (`unwrapScrapers` in `src/registry.mts`, which also handles the CJS-interop nesting). Each scraper keeps its own `id`, which is what routes `resolve()` and what the sources page lists; the package id only names the directory. A malformed entry is dropped alone. If two scrapers (in one package or across packages) claim the same id, the first loaded wins and the later one is logged and skipped. The importer is unchanged: it installs and version-compares the package as a whole.

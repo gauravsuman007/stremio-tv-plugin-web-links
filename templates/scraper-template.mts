@@ -8,7 +8,7 @@
  *
  * A SCRAPER IS A SMALL PACKAGE, NOT A BARE FILE
  * ------------------------------------------------
- * `<pluginsDir>/web-links/data/scrapers/<id>/` holds one scraper:
+ * `<pluginsDir>/web-links/data/scrapers/<id>/` holds one package, which may export several scrapers:
  *
  *   - `scraper.json` -- `{ "id": "...", "entry": "your-file.mjs", "version"?: "1.0.0" }`.
  *     The plugin reads this first to know what to load and, on a GitHub
@@ -23,7 +23,7 @@
  *
  * WHAT A SCRAPER IS
  * ------------------
- * A default export matching `WebLinkScraper` below: given a title (and,
+ * A default export matching `WebLinkScraper` below (or an array of them, when one package ships several sites): given a title (and,
  * for a series episode, season/episode numbers), return every HTTP link
  * your target site has for it. That's the entire job. The plugin host
  * runs every dropped-in scraper for each title lookup, merges their

@@ -62,7 +62,7 @@ imported and managed.
    for every plain HTTP request (and `ctx.proxyUrl` for anything else that
    opens its own connections).
 3. Compile it (the template's header has the exact `tsc` invocation) and
-   write a `scraper.json` (`{ "id", "entry", "version"? }`) alongside it.
+   write a `scraper.json` (`{ "id", "entry", "version"? }`) alongside it. The entry may default-export one scraper or an array of them (or a named `scrapers` array); `id` names the package, each scraper keeps its own id.
 4. Either publish both under a repo's `dist/` and use "Import from GitHub"
    on the plugin's settings page, or copy the folder by hand to
    `<pluginsDir>/web-links/data/scrapers/<id>/` and hit "Reload sources".
