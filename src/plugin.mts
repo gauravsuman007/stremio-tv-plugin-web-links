@@ -369,7 +369,9 @@ const createPlugin: PluginFactory = (host, configDir) => {
             name: scraper.name,
             enabled: scraperEnabled(scraper.id),
             version: packageVersionOf.get(scraper) ?? scraper.version,
-            packageId: packageOf.get(scraper)
+            packageId: packageOf.get(scraper),
+            maxQuality: scraper.maxQuality,
+            fetchMethod: scraper.fetchMethod
         }));
         const githubSources: GithubSourceRow[] = listGithubSources();
         const signedIn = Boolean((ctx.client as { session?: { authKey?: string } }).session?.authKey);

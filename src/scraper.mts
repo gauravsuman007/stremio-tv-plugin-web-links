@@ -107,6 +107,18 @@ export interface WebLinkScraper {
      *  own plugin/scraper importers) so a GitHub re-check only replaces a
      *  scraper already running with a real, newer version. */
     version?: string;
+    /** The best resolution this scraper can ever return, e.g. "480p",
+     *  "1080p", "4K" -- free text, shown next to the scraper on the settings
+     *  page. Not enforced or parsed: an individual `WebLink.quality` may
+     *  still be lower for a given title. Omit if unknown. */
+    maxQuality?: string;
+    /** How this scraper gets its links. `"fast"` -- plain HTTP, typically
+     *  under a few seconds. `"slow"` -- drives a real browser (Playwright/
+     *  Chromium) to read a value out of page-side code, typically seconds
+     *  to tens of seconds and needing `CHROMIUM_PATH` on the host. Informational
+     *  only (shown on the settings page); the host does not currently use it
+     *  to schedule or time out a scraper differently. Omit if unknown. */
+    fetchMethod?: "fast" | "slow";
     /** Return every link this scraper can find for `query`. An empty array
      *  for "no results", never a throw for "not found" -- reserve throwing
      *  for the target site actually being unreachable/erroring. A result

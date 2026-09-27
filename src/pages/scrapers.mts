@@ -8,6 +8,10 @@ export interface ScraperRow {
     version?: string;
     /** The package directory it was loaded from -- what Update acts on. */
     packageId?: string;
+    /** See `WebLinkScraper.maxQuality`. */
+    maxQuality?: string;
+    /** See `WebLinkScraper.fetchMethod`. */
+    fetchMethod?: "fast" | "slow";
 }
 
 export interface GithubSourceRow extends GithubSource {
@@ -58,9 +62,14 @@ export function scrapersPage(
                 ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-delete"))}" style="display:inline" onsubmit="return confirm('Delete ${escape(row.packageId).replace(/'/g, "")} and every scraper in it? This cannot be undone.')"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Delete</button></form>`
                 : "";
 
+            const badges = [
+                row.maxQuality ? `<span class="railsay">${escape(row.maxQuality)}</span>` : "",
+                row.fetchMethod ? `<span class="railsay" title="${row.fetchMethod === "fast" ? "Plain HTTP" : "Drives a real browser"}">${row.fetchMethod === "fast" ? "⚡ fast" : "🐢 slow"}</span>` : ""
+            ].join("");
+
             return `<li class="railrow${row.enabled ? "" : " railoff"}">
 <span class="railname">${escape(row.name)}${row.version ? ` <span class="railsay">v${escape(row.version)}</span>` : ""}</span>
-<span class="railsay">${escape(row.id)}</span>
+<span class="railsay">${escape(row.id)}</span>${badges}
 <span class="railacts">${row.packageId ? `<form method="POST" action="${escape(linkTo("/plugin/web-links/scraper-update"))}" style="display:inline"><input type="hidden" name="id" value="${escape(row.packageId)}"><button class="step" type="submit">Update</button></form>` : ""}${toggle}${remove}</span>
 </li>`;
         })
