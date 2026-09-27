@@ -42,14 +42,35 @@ async function runScraper(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
     proxyUrl: string | undefined
 ) {
+    const key = JSON.stringify([scraper.id, scraper.version, query.type, query.id, query.season, query.episode]);
+    const now = Date.now();
+    for (const [k, entry] of searchCache) if (now - entry.at > entry.ttl) searchCache.delete(k);
+    const cached = searchCache.get(key);
+    if (cached) return cached.links;
+
     const budgetMs = searchBudgetMs();
-    const timeout = new Promise<[]>((resolve) => setTimeout(() => resolve([]), budgetMs));
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs));
     const run = scraper.search(query, { fetch: fetchImpl, budgetMs, proxyUrl }).catch((cause) => {
         console.warn(`[web-links] scraper ${scraper.id} failed:`, cause);
-        return [];
+        return null;
     });
-    return Promise.race([run, timeout]);
+    const links = await Promise.race([run, timeout]);
+    // A placeholder row (a resolve still running past the budget) is not an answer worth keeping.
+    const settled = links !== null && !links.some((link) => link.resolveId && !link.quality && !link.height);
+    if (settled) searchCache.set(key, { at: now, ttl: links.length ? SEARCH_CACHE_TTL_MS : EMPTY_SEARCH_CACHE_TTL_MS, links });
+    return links ?? [];
 }
+
+/*
+    A TITLE'S WEB LINKS ARE LISTED ONCE, not on every visit to its "select
+    quality" screen: coming back from the player shows the same rows at once.
+    Safe because a row never carries its final URL -- playing it resolves
+    (and re-checks) the link then, so an expired one is fetched afresh.
+    Keyed by scraper version, so an updated scraper searches again.
+*/
+const SEARCH_CACHE_TTL_MS = 3 * 60 * 60_000;
+const EMPTY_SEARCH_CACHE_TTL_MS = 10 * 60_000;
+const searchCache = new Map<string, { at: number; ttl: number; links: WebLink[] }>();
 
 /**
  * A resolved link is cached briefly, keyed by exactly what produced it, so
@@ -721,8 +742,13 @@ const createPlugin: PluginFactory = (host, configDir) => {
                     name: link.quality,
                     title: link.title,
                     description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined,
-                    // Read back by `streamColumn` to order and badge the row.
-                    ...(link.height ? { behaviorHints: { webLinkHeight: link.height } } : {})
+                    // Read back by `streamColumn` to order, head and badge the row.
+                    behaviorHints: {
+                        webLinkSite: scraper.name.split(" \u00b7 ")[0],
+                        ...(link.server ? { webLinkServer: link.server } : {}),
+                        ...(link.height ? { webLinkHeight: link.height } : {}),
+                        ...(link.audio?.length ? { webLinkAudio: link.audio } : {})
+                    }
                 } satisfies ExtraStream
             };
         });
@@ -746,9 +772,12 @@ const createPlugin: PluginFactory = (host, configDir) => {
  * (plugin API 1.1.0) -- stremio-tv only places it and supplies each row's
  * `/play` link. Best measured resolution first (`webLinkHeight`, from
  * `WebLink.height`), the rest in the order they came. Each row is headed by
- * the scraper and server; its title drops the trailing site name (the
+ * the scraper and server, in bold -- not the scraper's "up to" or the
+ * resolution list, which the tag and settings page already say. Its title
+ * drops the trailing site name (the
  * heading already says it) and there is no verdict line, since every row
- * here is the same kind of thing: a direct link, checked when played.
+ * here is the same kind of thing: a direct link, checked when played. The
+ * last line is the audio language(s) (`webLinkAudio`, from `WebLink.audio`).
  * Classes are stremio-tv's own row styles.
  */
 export function streamColumn(host: PluginHost, input: StreamColumnInput): StreamColumn | null {
@@ -758,8 +787,11 @@ export function streamColumn(host: PluginHost, input: StreamColumnInput): Stream
     const rows = [...input.rows]
         .sort((a, b) => heightOf(b) - heightOf(a))
         .map((row) => {
+            const hints = row.stream.behaviorHints ?? {};
             const who = row.from.manifest.name || row.from.manifest.id;
-            const site = who.split(" \u00b7 ")[0] ?? "";
+            const site = typeof hints.webLinkSite === "string" ? hints.webLinkSite : (who.split(" \u00b7 ")[0] ?? "");
+            const server = typeof hints.webLinkServer === "string" ? hints.webLinkServer : "";
+            const head = server && server !== site ? `${site} \u00b7 ${server}` : site;
             const title = row.stream.title ?? "";
             const what = site && title.endsWith(` \u00b7 ${site}`) ? title.slice(0, -(site.length + 3)) : title;
             const height = heightOf(row);
@@ -767,9 +799,11 @@ export function streamColumn(host: PluginHost, input: StreamColumnInput): Stream
                 height ? `<b class="tag">${escape(height >= 2160 ? "4K" : `${height}p`)}</b>` : `<b class="tag">? quality</b>`,
                 row.stream.description ? `<b class="tag">${escape(row.stream.description)}</b>` : ""
             ].join("");
-            return `<a class="row good" href="${escape(row.href)}"><span class="who who-full">${escape(who)}</span>
+            const audio = Array.isArray(hints.webLinkAudio) ? hints.webLinkAudio.filter((a): a is string => typeof a === "string") : [];
+            return `<a class="row good" href="${escape(row.href)}"><span class="who who-full"><b>${escape(head)}</b></span>
 <span class="what">${escape(what)}</span>
-<span class="tags">${tags}</span></a>`;
+<span class="tags">${tags}</span>
+<span class="what">Audio: ${audio.length ? escape(audio.join(", ")) : "not stated"}</span></a>`;
         })
         .join("\n");
 

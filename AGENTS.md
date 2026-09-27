@@ -46,6 +46,10 @@ Each scraper row has **Update**, **Disable/Enable** and **Delete**. There is no 
 
 `streamColumn` (plugin API 1.1.0; types in `src/contract.mts`) renders this plugin's column on stremio-tv's "select quality" screen: stremio-tv hands over every stream this plugin offered, each with its `/play` link, and places the `{ heading, html }` returned. Row wording, badges (the measured `webLinkHeight`, carried in `behaviorHints`), order (tallest first) and the VPN line at the top are all here. An older stremio-tv never calls it and draws the rows itself. `test/plugin.mjs` covers the order and markup.
 
+Each row is headed, in bold, by the scraper's site name and the link's `WebLink.server` (`webLinkSite`/`webLinkServer` hints); its last line lists `WebLink.audio` (`webLinkAudio`), "not stated" when a scraper gives none (both fields need >= 0.13.0).
+
+**Search results are cached** (`searchCache` in `src/plugin.mts`, 3h, 10 min for an empty answer, keyed by scraper id and version and the title), so coming back from the player lists the same rows at once and `/play/<index>` points at the same row it did. A placeholder answer (a row with a `resolveId` but no `quality`/`height`, i.e. a resolve still running) is never cached. Rows never carry final URLs, so this is safe: playing resolves and re-checks the link.
+
 ## Search timeout is a setting
 
 The budget every scraper's `search()` gets for one title is set on the settings page ("Search timeout", 1-60s, default 5s), stored as `searchTimeoutMs` in `scraper-state.json` next to the on/off switches (`src/scraper-config.mts`). It bounds how long the streams list waits for web links; a scraper that isn't done in time returns a placeholder row. `resolve()` at play time has its own, longer budget (`RESOLVE_BUDGET_MS`).

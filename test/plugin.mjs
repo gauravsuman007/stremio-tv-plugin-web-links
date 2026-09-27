@@ -91,6 +91,30 @@ test("extraStreamsFor lists measured links tallest first, unmeasured after in sc
     }
 });
 
+test("a finished search is reused; a placeholder answer is searched again", async () => {
+    const { default: createPlugin } = await import("../dist/plugin.mjs");
+    const dir = tmpDataDir();
+    const pkg = join(dir, "scrapers", "pkg");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "scraper.json"), JSON.stringify({ id: "pkg", entry: "e.cjs", version: "1.0.0" }));
+    writeFileSync(
+        join(pkg, "e.cjs"),
+        `globalThis.__calls={done:0,late:0};` +
+            `module.exports={default:[` +
+            `{id:"done",name:"Done",search:async()=>{__calls.done++;return [{url:"",resolveId:"d",quality:"1080p",height:1080}]}},` +
+            `{id:"late",name:"Late",search:async()=>{__calls.late++;return [{url:"",resolveId:"l"}]}}]};`
+    );
+    try {
+        const plugin = createPlugin(fakeHost, dir);
+        await plugin.extraStreamsFor("movie", "tt7");
+        const again = await plugin.extraStreamsFor("movie", "tt7");
+        assert.equal(again.length, 2);
+        assert.deepEqual(globalThis.__calls, { done: 1, late: 2 });
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test("streamColumn draws web links tallest first with the host's play links", async () => {
     const { default: createPlugin } = await import("../dist/plugin.mjs");
     const dir = tmpDataDir();
@@ -107,6 +131,15 @@ test("streamColumn draws web links tallest first with the host's play links", as
         assert.deepEqual(hrefs, ["/play/movie/tt1/C", "/play/movie/tt1/B", "/play/movie/tt1/A"]);
         assert.ok(column.html.includes(">1080p<"));
         assert.ok(!column.html.includes("Film (2020) · C"), "the site name is dropped from the title");
+        assert.ok(column.html.includes("Audio: not stated"));
+        const headed = plugin.streamColumn({
+            type: "movie", id: "tt1", title: "Film", vpn: null, vpnAction: "", back: "",
+            rows: [{ href: "/p", from: { manifest: { id: "web-links", name: "7Movies · up to 1080p · 2586x1080 · Orion" } },
+                     stream: { title: "Film (2020) · 7Movies", behaviorHints: { webLinkSite: "7Movies", webLinkServer: "Orion · French", webLinkHeight: 1080, webLinkAudio: ["French"] } } }]
+        });
+        assert.ok(headed.html.includes("<b>7Movies · Orion · French</b>"), "the row is headed by site and server, in bold");
+        assert.ok(!headed.html.includes("up to 1080p") && !headed.html.includes("2586x1080"), "no clutter in the heading");
+        assert.ok(headed.html.includes("Audio: French"));
         assert.equal(plugin.streamColumn({ type: "movie", id: "tt1", title: "Film", rows: [], vpn: null, vpnAction: "", back: "" }), null);
     } finally {
         rmSync(dir, { recursive: true, force: true });

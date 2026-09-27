@@ -71,6 +71,15 @@ export interface WebLink {
      *  The host lists a title's web links best first by this; links without
      *  it follow, in scraper order. Needs web-links >= 0.11.0. */
     height?: number;
+    /** The site's own name for the server/mirror this link came from, e.g.
+     *  "Orion" -- shown bold beside the scraper's name at the head of the
+     *  row. Needs web-links >= 0.13.0. */
+    server?: string;
+    /** The audio language(s) this link carries, as display names
+     *  ("English", "French"), best known first. A scraper that is guessing
+     *  says so in the text ("English (assumed)"). Shown on the row's last
+     *  line. Needs web-links >= 0.13.0. */
+    audio?: string[];
     /** A short display title for this specific link, e.g. the release name. */
     title?: string;
     /** Human-readable file size, e.g. "2.1 GB". */
