@@ -41,3 +41,11 @@ Each scraper row has **Update**, **Disable/Enable** and **Delete**. There is no 
 ## Web links are listed best resolution first
 
 `WebLink.height` (contract in `src/scraper.mts`) is the vertical resolution a scraper actually measured for a link (from its playlist, not guessed). `extraStreamsFor` sorts a title's web links by it, tallest first; links without it follow in scraper order (the sort is stable). A scraper that resolves cheaply may now resolve during `search()` to set it, keeping `resolveId` so the URL is re-checked at play time rather than trusted from the list -- stremio-tv-plugin-web-scraper does this since 1.20.0. `test/plugin.mjs` checks the order. Needs web-links >= 0.11.0; an older host ignores the field and keeps scraper order.
+
+## The "Web links" column is drawn here, not in stremio-tv
+
+`streamColumn` (plugin API 1.1.0; types in `src/contract.mts`) renders this plugin's column on stremio-tv's "select quality" screen: stremio-tv hands over every stream this plugin offered, each with its `/play` link, and places the `{ heading, html }` returned. Row wording, badges (the measured `webLinkHeight`, carried in `behaviorHints`), order (tallest first) and the VPN line at the top are all here. An older stremio-tv never calls it and draws the rows itself. `test/plugin.mjs` covers the order and markup.
+
+## Search timeout is a setting
+
+The budget every scraper's `search()` gets for one title is set on the settings page ("Search timeout", 1-60s, default 5s), stored as `searchTimeoutMs` in `scraper-state.json` next to the on/off switches (`src/scraper-config.mts`). It bounds how long the streams list waits for web links; a scraper that isn't done in time returns a placeholder row. `resolve()` at play time has its own, longer budget (`RESOLVE_BUDGET_MS`).

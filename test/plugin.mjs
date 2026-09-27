@@ -90,3 +90,44 @@ test("extraStreamsFor lists measured links tallest first, unmeasured after in sc
         rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test("streamColumn draws web links tallest first with the host's play links", async () => {
+    const { default: createPlugin } = await import("../dist/plugin.mjs");
+    const dir = tmpDataDir();
+    try {
+        const plugin = createPlugin(fakeHost, dir);
+        const row = (name, height) => ({
+            href: `/play/movie/tt1/${name}`,
+            from: { manifest: { id: "web-links", name: `${name} · 1080p` } },
+            stream: { title: `Film (2020) · ${name}`, ...(height ? { behaviorHints: { webLinkHeight: height } } : {}) }
+        });
+        const column = plugin.streamColumn({ type: "movie", id: "tt1", title: "Film", rows: [row("A", 0), row("B", 720), row("C", 1080)], vpn: null, vpnAction: "/vpn", back: "/detail" });
+        assert.equal(column.heading, "Web links");
+        const hrefs = [...column.html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
+        assert.deepEqual(hrefs, ["/play/movie/tt1/C", "/play/movie/tt1/B", "/play/movie/tt1/A"]);
+        assert.ok(column.html.includes(">1080p<"));
+        assert.ok(!column.html.includes("Film (2020) · C"), "the site name is dropped from the title");
+        assert.equal(plugin.streamColumn({ type: "movie", id: "tt1", title: "Film", rows: [], vpn: null, vpnAction: "", back: "" }), null);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("the search timeout defaults to 5s, is shown on the settings page, and is saved", async () => {
+    const { default: createPlugin } = await import("../dist/plugin.mjs");
+    const dir = tmpDataDir();
+    try {
+        const routes = createPlugin(fakeHost, dir).routes();
+        const call = (method, path, form = "") =>
+            routes.find((r) => r.method === method && r.path === path).handle({
+                method, path, query: new URLSearchParams(), form: new URLSearchParams(form), headers: {}, client: { link: (p) => p, session: {} }, params: {}
+            });
+        assert.ok((await call("GET", "/plugin/web-links")).body.includes('name="seconds" type="number" min="1" max="60" step="1" value="5"'));
+        await call("POST", "/plugin/web-links/search-timeout", "seconds=12");
+        assert.ok((await call("GET", "/plugin/web-links")).body.includes('value="12"'));
+        await call("POST", "/plugin/web-links/search-timeout", "seconds=999");
+        assert.ok((await call("GET", "/plugin/web-links")).body.includes('value="60"'), "clamped to 60s");
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});

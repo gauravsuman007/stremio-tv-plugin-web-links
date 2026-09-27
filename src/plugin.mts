@@ -1,10 +1,10 @@
-import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, VpnStatus } from "./contract.mjs";
+import type { PluginFactory, PluginHost, PluginRoute, PluginRouteContext, ExtraStream, StreamColumn, StreamColumnInput, StreamColumnRow, VpnStatus } from "./contract.mjs";
 import type { WebLink, WebLinkQuery, WebLinkScraper } from "./scraper.mjs";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { loadScrapers, packageOf, packageVersionOf } from "./registry.mjs";
 import { makeVpnAwareFetch } from "./vpn-fetch.mjs";
-import { initScraperConfig, scraperEnabled, setScraperEnabled } from "./scraper-config.mjs";
+import { getSearchTimeoutMs, initScraperConfig, scraperEnabled, setScraperEnabled, setSearchTimeoutMs } from "./scraper-config.mjs";
 import {
     forgetGithubSource,
     importScraperFromGithub,
@@ -27,8 +27,14 @@ function parseQuery(type: string, id: string, title: string): WebLinkQuery {
 
 /** One search budget shared across every scraper for a single title, so a
  *  slow or hung scraper can't stall the whole `extraStreamsFor` call --
- *  and, in turn, the user's "select quality" screen. */
-const SEARCH_BUDGET_MS = 15000;
+ *  and, in turn, the user's "select quality" screen. Set on the settings
+ *  page (`getSearchTimeoutMs`, 5s by default). */
+function searchBudgetMs(): number {
+    return getSearchTimeoutMs();
+}
+
+/** A resolve happens after the viewer pressed play: it may take longer. */
+const RESOLVE_BUDGET_MS = 15_000;
 
 async function runScraper(
     scraper: WebLinkScraper,
@@ -36,8 +42,9 @@ async function runScraper(
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
     proxyUrl: string | undefined
 ) {
-    const timeout = new Promise<[]>((resolve) => setTimeout(() => resolve([]), SEARCH_BUDGET_MS));
-    const run = scraper.search(query, { fetch: fetchImpl, budgetMs: SEARCH_BUDGET_MS, proxyUrl }).catch((cause) => {
+    const budgetMs = searchBudgetMs();
+    const timeout = new Promise<[]>((resolve) => setTimeout(() => resolve([]), budgetMs));
+    const run = scraper.search(query, { fetch: fetchImpl, budgetMs, proxyUrl }).catch((cause) => {
         console.warn(`[web-links] scraper ${scraper.id} failed:`, cause);
         return [];
     });
@@ -327,7 +334,7 @@ async function resolveWebLink(
     const { fetch: fetchImpl, proxyUrl } = await makeVpnAwareFetch(host, PLUGIN_ID, (ctx.client as { session?: unknown }).session);
     let link: WebLink | null;
     try {
-        link = await scraper.resolve(rid, query, { fetch: fetchImpl, budgetMs: SEARCH_BUDGET_MS, proxyUrl });
+        link = await scraper.resolve(rid, query, { fetch: fetchImpl, budgetMs: RESOLVE_BUDGET_MS, proxyUrl });
     } catch (cause) {
         console.warn(`[web-links] resolve failed for ${scraperId}/${rid}:`, cause);
         link = null;
@@ -379,7 +386,7 @@ const createPlugin: PluginFactory = (host, configDir) => {
         const link = (ctx.client as { link(path: string): string }).link;
 
         return {
-            body: scrapersPage(host, ctx.client, signedIn, rows, githubSources, note, (capability.status as VpnStatus | null) ?? null, link),
+            body: scrapersPage(host, ctx.client, signedIn, rows, githubSources, note, (capability.status as VpnStatus | null) ?? null, link, getSearchTimeoutMs()),
             headers: { "content-type": "text/html" }
         };
     }
@@ -406,6 +413,16 @@ const createPlugin: PluginFactory = (host, configDir) => {
                 }
 
                 return sendScrapersPage(ctx, null);
+            }
+        },
+        {
+            method: "POST",
+            path: "/plugin/web-links/search-timeout",
+            async handle(ctx) {
+                const seconds = Number.parseFloat(String(ctx.form.get("seconds") || ""));
+                if (!Number.isFinite(seconds)) return sendScrapersPage(ctx, { text: "Enter the timeout in seconds.", ok: false });
+                setSearchTimeoutMs(seconds * 1000);
+                return sendScrapersPage(ctx, { text: `Search timeout set to ${getSearchTimeoutMs() / 1000}s.`, ok: true });
             }
         },
         {
@@ -703,7 +720,9 @@ const createPlugin: PluginFactory = (host, configDir) => {
                         : link.url,
                     name: link.quality,
                     title: link.title,
-                    description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined
+                    description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined,
+                    // Read back by `streamColumn` to order and badge the row.
+                    ...(link.height ? { behaviorHints: { webLinkHeight: link.height } } : {})
                 } satisfies ExtraStream
             };
         });
@@ -713,13 +732,53 @@ const createPlugin: PluginFactory = (host, configDir) => {
         id: PLUGIN_ID,
         name: "Web Links",
         version: pluginVersion(),
-        apiVersion: "1.0.0",
+        apiVersion: "1.1.0",
         routes: () => routes,
         extraStreamsFor,
+        streamColumn: (input) => streamColumn(host, input),
         settingsLink: { label: "Web Links", href: "/plugin/web-links" },
         configDir
     };
 };
+
+/**
+ * THE "WEB LINKS" COLUMN on stremio-tv's "select quality" screen, drawn here
+ * (plugin API 1.1.0) -- stremio-tv only places it and supplies each row's
+ * `/play` link. Best measured resolution first (`webLinkHeight`, from
+ * `WebLink.height`), the rest in the order they came. Each row is headed by
+ * the scraper and server; its title drops the trailing site name (the
+ * heading already says it) and there is no verdict line, since every row
+ * here is the same kind of thing: a direct link, checked when played.
+ * Classes are stremio-tv's own row styles.
+ */
+export function streamColumn(host: PluginHost, input: StreamColumnInput): StreamColumn | null {
+    if (!input.rows.length) return null;
+    const escape = host.render.escape;
+    const heightOf = (row: StreamColumnRow) => Number(row.stream.behaviorHints?.webLinkHeight) || 0;
+    const rows = [...input.rows]
+        .sort((a, b) => heightOf(b) - heightOf(a))
+        .map((row) => {
+            const who = row.from.manifest.name || row.from.manifest.id;
+            const site = who.split(" \u00b7 ")[0] ?? "";
+            const title = row.stream.title ?? "";
+            const what = site && title.endsWith(` \u00b7 ${site}`) ? title.slice(0, -(site.length + 3)) : title;
+            const height = heightOf(row);
+            const tags = [
+                height ? `<b class="tag">${escape(height >= 2160 ? "4K" : `${height}p`)}</b>` : `<b class="tag">? quality</b>`,
+                row.stream.description ? `<b class="tag">${escape(row.stream.description)}</b>` : ""
+            ].join("");
+            return `<a class="row good" href="${escape(row.href)}"><span class="who who-full">${escape(who)}</span>
+<span class="what">${escape(what)}</span>
+<span class="tags">${tags}</span></a>`;
+        })
+        .join("\n");
+
+    // `.routing` is what the sheet is positioned against; without it the sheet lands on the nav bar.
+    const routing = input.vpn
+        ? `<section class="routing">${host.vpnBadge(input.vpn, "links")}${host.vpnSheet(input.vpn, input.vpnAction, input.back, "links")}</section>`
+        : "";
+    return { heading: "Web links", html: `${routing}<div class="rows">${rows}</div>` };
+}
 
 /** Read from `plugin.json` beside the compiled file, the one place the
  *  version is written, so the code can never claim a different one. */

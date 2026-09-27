@@ -47,7 +47,8 @@ export function scrapersPage(
     githubSources: GithubSourceRow[] = [],
     note: { text: string; ok: boolean } | null = null,
     vpn: VpnStatus | null = null,
-    linkTo: (path: string) => string = (p) => p
+    linkTo: (path: string) => string = (p) => p,
+    searchTimeoutMs = 5_000
 ): string {
     const escape = host.render.escape;
 
@@ -110,10 +111,17 @@ export function scrapersPage(
 ${
     vpnPanel
         ? `<h3 class="lead">The VPN</h3>
-<p class="hint">A scraper's own HTTP calls -- and, for a scraper that drives a real browser, that browser's traffic too -- go through the same household tunnel Live TV and Riven share. Changing it here changes it everywhere.</p>
+<p class="hint">A scraper's own HTTP calls go through the same household tunnel Live TV and Riven share. Changing it here changes it everywhere.</p>
 ${vpnPanel}`
         : ""
 }
+<h3 class="lead">Search timeout</h3>
+<p class="hint">How long every scraper together may search when a title's streams are listed. Each one resolves for real within it, so its row can say the resolution it found; one that isn't done in time still gets a row, without a resolution, and finishes when you press play. Longer shows more resolutions; shorter opens the list sooner.</p>
+<form method="POST" action="${escape(linkTo("/plugin/web-links/search-timeout"))}">
+<label for="search-timeout">Seconds (1&ndash;60)</label>
+<input id="search-timeout" name="seconds" type="number" min="1" max="60" step="1" value="${escape(String(Math.round(searchTimeoutMs / 1000)))}">
+<button class="go" type="submit">Save</button>
+</form>
 <h3 class="lead">Loaded scrapers</h3>
 ${note ? `<p class="hint${note.ok ? "" : " error"}">${escape(note.text)}</p>` : ""}
 ${list.length ? `<ul class="rails">\n${list}\n</ul>` : `<p class="empty">No scrapers are configured.</p>`}

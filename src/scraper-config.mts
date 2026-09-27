@@ -8,10 +8,19 @@ import { dirname, join } from "node:path";
  *  imported should work immediately, not need a second step to turn on. */
 let path = "";
 let off = new Set<string>();
+/** How long a title's scraper search may take, set on the settings page. */
+export const DEFAULT_SEARCH_TIMEOUT_MS = 5_000;
+export const MIN_SEARCH_TIMEOUT_MS = 1_000;
+export const MAX_SEARCH_TIMEOUT_MS = 60_000;
+let searchTimeoutMs = DEFAULT_SEARCH_TIMEOUT_MS;
 let loaded = false;
 
 export function initScraperConfig(configDir: string): void {
     path = join(configDir, "scraper-state.json");
+    // A reloaded plugin instance may point at another directory: read it afresh.
+    loaded = false;
+    off = new Set();
+    searchTimeoutMs = DEFAULT_SEARCH_TIMEOUT_MS;
 }
 
 function ensureLoaded(): void {
@@ -20,8 +29,9 @@ function ensureLoaded(): void {
     if (!path) return;
 
     try {
-        const parsed = JSON.parse(readFileSync(path, "utf8")) as { off?: string[] };
+        const parsed = JSON.parse(readFileSync(path, "utf8")) as { off?: string[]; searchTimeoutMs?: number };
         off = new Set(parsed.off || []);
+        if (typeof parsed.searchTimeoutMs === "number") searchTimeoutMs = clampTimeout(parsed.searchTimeoutMs);
     } catch {
         /* no store yet, or unreadable -- everything enabled is the default */
     }
@@ -32,7 +42,7 @@ function persist(): void {
     try {
         mkdirSync(dirname(path), { recursive: true });
         const temporary = `${path}.tmp`;
-        writeFileSync(temporary, JSON.stringify({ off: [...off] }));
+        writeFileSync(temporary, JSON.stringify({ off: [...off], searchTimeoutMs }));
         renameSync(temporary, path);
     } catch (cause) {
         console.error("web-links: could not write scraper-state.json", cause);
@@ -48,5 +58,21 @@ export function setScraperEnabled(id: string, enabled: boolean): void {
     ensureLoaded();
     if (enabled) off.delete(id);
     else off.add(id);
+    persist();
+}
+
+function clampTimeout(ms: number): number {
+    return Number.isFinite(ms) ? Math.min(MAX_SEARCH_TIMEOUT_MS, Math.max(MIN_SEARCH_TIMEOUT_MS, Math.round(ms))) : DEFAULT_SEARCH_TIMEOUT_MS;
+}
+
+/** The budget every scraper's `search()` gets for one title (they run at once). */
+export function getSearchTimeoutMs(): number {
+    ensureLoaded();
+    return searchTimeoutMs;
+}
+
+export function setSearchTimeoutMs(ms: number): void {
+    ensureLoaded();
+    searchTimeoutMs = clampTimeout(ms);
     persist();
 }

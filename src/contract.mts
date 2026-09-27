@@ -58,8 +58,34 @@ export interface StremioTvPlugin {
     apiVersion?: string;
     routes?(): PluginRoute[];
     extraStreamsFor?(type: string, id: string, session?: unknown): Promise<{ from?: unknown; value: ExtraStream }[]>;
+    /** Plugin API 1.1.0: this plugin draws its own column on the "select
+     *  quality" screen; an older host never calls it. */
+    streamColumn?(input: StreamColumnInput): StreamColumn | null;
     settingsLink?: { label: string; href: string };
     configDir: string;
+}
+
+/** One of this plugin's streams, with the `/play` link stremio-tv built. */
+export interface StreamColumnRow {
+    href: string;
+    from: { manifest: { id: string; name?: string } };
+    stream: ExtraStream;
+}
+
+export interface StreamColumnInput {
+    type: string;
+    id: string;
+    title: string;
+    rows: StreamColumnRow[];
+    /** Null for a live channel, or when no tunnel is configured. */
+    vpn: VpnStatus | null;
+    vpnAction: string;
+    back: string;
+}
+
+export interface StreamColumn {
+    heading: string;
+    html: string;
 }
 
 export type PluginFactory = (host: PluginHost, configDir: string) => StremioTvPlugin;
