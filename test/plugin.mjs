@@ -102,12 +102,14 @@ test("a finished search is reused; a placeholder answer is searched again", asyn
         `globalThis.__calls={done:0,late:0};` +
             `module.exports={default:[` +
             `{id:"done",name:"Done",search:async()=>{__calls.done++;return [{url:"",resolveId:"d",quality:"1080p",height:1080}]}},` +
-            `{id:"late",name:"Late",search:async()=>{__calls.late++;return [{url:"",resolveId:"l"}]}}]};`
+            `{id:"late",name:"Late",search:async()=>{__calls.late++;if(__calls.late>1)await new Promise(r=>setTimeout(r,3000));return [{url:"",resolveId:"l"}]}}]};`
     );
     try {
         const plugin = createPlugin(fakeHost, dir);
         await plugin.extraStreamsFor("movie", "tt7");
+        const started = Date.now();
         const again = await plugin.extraStreamsFor("movie", "tt7");
+        assert.ok(Date.now() - started < 1500, "a pending answer is not waited out again");
         assert.equal(again.length, 2);
         assert.deepEqual(globalThis.__calls, { done: 1, late: 2 });
     } finally {

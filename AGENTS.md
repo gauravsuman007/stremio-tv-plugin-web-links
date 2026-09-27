@@ -48,7 +48,7 @@ Each scraper row has **Update**, **Disable/Enable** and **Delete**. There is no 
 
 Each row is headed, in bold, by the scraper's site name and the link's `WebLink.server` (`webLinkSite`/`webLinkServer` hints); its last line lists `WebLink.audio` (`webLinkAudio`), "not stated" when a scraper gives none (both fields need >= 0.13.0).
 
-**Search results are cached** (`searchCache` in `src/plugin.mts`, 3h, 10 min for an empty answer, keyed by scraper id and version and the title), so coming back from the player lists the same rows at once and `/play/<index>` points at the same row it did. A placeholder answer (a row with a `resolveId` but no `quality`/`height`, i.e. a resolve still running) is never cached. Rows never carry final URLs, so this is safe: playing resolves and re-checks the link.
+**Search results are cached** (`searchCache` in `src/plugin.mts`, 3h, 10 min for an empty answer, keyed by scraper id and version and the title), so coming back from the player lists the same rows at once and `/play/<index>` points at the same row it did. A placeholder answer (a row with a `resolveId` but no `quality`/`height`, i.e. a resolve still running) is asked again on the next visit, but only for 400ms before the same placeholders are shown. Rows never carry final URLs, so this is safe: playing resolves and re-checks the link.
 
 ## Search timeout is a setting
 
