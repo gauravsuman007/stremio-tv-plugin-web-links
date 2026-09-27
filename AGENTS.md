@@ -37,3 +37,7 @@ Each scraper row has **Update**, **Disable/Enable** and **Delete**. There is no 
 ## A scraper can declare its max resolution and fetch method
 
 `WebLinkScraper.maxQuality` (free text, e.g. `"1080p"`, `"4K"`) and `WebLinkScraper.fetchMethod` (`"fast"` for plain HTTP, `"slow"` for a Playwright/Chromium-driven scraper) are optional metadata a scraper sets once, alongside `id`/`name` -- contract in `src/scraper.mts`. The settings page (`src/pages/scrapers.mts`) shows both next to each scraper's name and version; the host does not otherwise act on them (no scheduling or timeout change). Both are informational only and safe to omit; an older scraper package that predates this field just shows neither badge.
+
+## Web links are listed best resolution first
+
+`WebLink.height` (contract in `src/scraper.mts`) is the vertical resolution a scraper actually measured for a link (from its playlist, not guessed). `extraStreamsFor` sorts a title's web links by it, tallest first; links without it follow in scraper order (the sort is stable). A scraper that resolves cheaply may now resolve during `search()` to set it, keeping `resolveId` so the URL is re-checked at play time rather than trusted from the list -- stremio-tv-plugin-web-scraper does this since 1.20.0. `test/plugin.mjs` checks the order. Needs web-links >= 0.11.0; an older host ignores the field and keeps scraper order.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -66,6 +66,26 @@ test("the settings route renders without a client crash", async () => {
             params: {}
         });
         assert.ok(response.body.includes("Web Links"));
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("extraStreamsFor lists measured links tallest first, unmeasured after in scraper order", async () => {
+    const { default: createPlugin } = await import("../dist/plugin.mjs");
+    const dir = tmpDataDir();
+    const pkg = join(dir, "scrapers", "pkg");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "scraper.json"), JSON.stringify({ id: "pkg", entry: "e.cjs", version: "1.0.0" }));
+    writeFileSync(
+        join(pkg, "e.cjs"),
+        `const mk=(id,rows)=>({id,name:id,search:async()=>rows.map((height,i)=>({url:"https://x/"+id+i,quality:id+i,...(height?{height}:{})}))});` +
+            `module.exports={default:[mk("a",[0,720]),mk("b",[1080]),mk("c",[0])]};`
+    );
+    try {
+        const plugin = createPlugin(fakeHost, dir);
+        const streams = await plugin.extraStreamsFor("movie", "tt0000000");
+        assert.deepEqual(streams.map((s) => s.value.name), ["b0", "a1", "a0", "c0"]);
     } finally {
         rmSync(dir, { recursive: true, force: true });
     }

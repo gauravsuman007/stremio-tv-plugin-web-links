@@ -44,8 +44,11 @@ export interface WebLink {
      *  cost too much to do for every result, before the user ever clicks
      *  it. When set, `url` above is a placeholder and the host calls
      *  `scraper.resolve(resolveId, ...)` right before actually using this
-     *  link -- once, at play time, never at list time -- to get the real,
-     *  fresh one. Omit for a plain scraper whose `url` is already final. */
+     *  link -- once, at play time -- to get the real, fresh one. A scraper
+     *  whose resolving is cheap may resolve during `search()` anyway, to
+     *  report the real `quality`/`height`, and still set `resolveId` so the
+     *  URL is re-checked when played rather than trusted from the list.
+     *  Omit for a plain scraper whose `url` is already final. */
     resolveId?: string;
     /** Only meaningful alongside `resolveId`. `"file"` (the default) means
      *  the resolved `url` is a plain file the host can redirect straight to.
@@ -63,6 +66,11 @@ export interface WebLink {
     /** Free-text quality label, e.g. "1080p WEB-DL" -- shown to the user,
      *  never parsed or trusted by the host. */
     quality?: string;
+    /** The best vertical resolution this link actually carries (1080 for a
+     *  1920x1080 or 1920x800 top rendition), when the scraper measured it.
+     *  The host lists a title's web links best first by this; links without
+     *  it follow, in scraper order. Needs web-links >= 0.11.0. */
+    height?: number;
     /** A short display title for this specific link, e.g. the release name. */
     title?: string;
     /** Human-readable file size, e.g. "2.1 GB". */
@@ -128,7 +136,8 @@ export interface WebLinkScraper {
      *  `WebLink`s -- turns that id back into the real, fresh link right
      *  before it is used. Called at most once per play attempt (the host
      *  briefly caches the answer so a single play doesn't re-run this for
-     *  every internal fetch of the same link), never at list time. Return
+     *  every internal fetch of the same link), never by the host at list
+     *  time. Return
      *  `null` for "this one's gone" rather than throwing, when that's
      *  distinguishable from the target site being unreachable. */
     resolve?(resolveId: string, query: WebLinkQuery, ctx: ScraperContext): Promise<WebLink | null>;
