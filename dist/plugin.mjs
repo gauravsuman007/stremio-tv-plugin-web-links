@@ -612,8 +612,17 @@ const createPlugin = (host, configDir) => {
         const query = parseQuery(type, id, id);
         const sessionId = session?.id;
         const perScraper = await Promise.all(enabled.map(async (scraper) => ({ scraper, links: await runScraper(scraper, query, fetchImpl, proxyUrl) })));
-        return perScraper.flatMap(({ scraper, links }) => {
-            return links.map((link) => ({
+        /*
+            BEST RESOLUTION FIRST. A scraper that measured its link sets
+            `height`; those rows lead, tallest first, and the rest keep the
+            order they came in (sort is stable), so the viewer sees which
+            scraper actually has 1080p without playing each one.
+        */
+        const ranked = perScraper
+            .flatMap(({ scraper, links }) => links.map((link) => ({ scraper, link })))
+            .sort((a, b) => (b.link.height ?? 0) - (a.link.height ?? 0));
+        return ranked.map(({ scraper, link }) => {
+            return {
                 /*
                     The row's "who" line is the addon's manifest name, and
                     for every web link that used to be the plugin's own
@@ -638,7 +647,7 @@ const createPlugin = (host, configDir) => {
                     title: link.title,
                     description: [link.size, ...(link.labels ?? [])].filter(Boolean).join(" · ") || undefined
                 }
-            }));
+            };
         });
     }
     return {
