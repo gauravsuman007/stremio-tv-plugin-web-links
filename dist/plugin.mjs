@@ -28,28 +28,34 @@ async function runScraper(scraper, query, fetchImpl, proxyUrl) {
         if (now - entry.at > entry.ttl)
             searchCache.delete(k);
     const cached = searchCache.get(key);
-    if (cached)
+    if (cached && !cached.pending)
         return cached.links;
-    const budgetMs = searchBudgetMs();
+    // Already answered with placeholders: don't make the viewer wait out the budget again for them.
+    const budgetMs = cached ? PENDING_RECHECK_MS : searchBudgetMs();
     const timeout = new Promise((resolve) => setTimeout(() => resolve(null), budgetMs));
     const run = scraper.search(query, { fetch: fetchImpl, budgetMs, proxyUrl }).catch((cause) => {
         console.warn(`[web-links] scraper ${scraper.id} failed:`, cause);
         return null;
     });
     const links = await Promise.race([run, timeout]);
-    // A placeholder row (a resolve still running past the budget) is not an answer worth keeping.
-    const settled = links !== null && !links.some((link) => link.resolveId && !link.quality && !link.height);
-    if (settled)
-        searchCache.set(key, { at: now, ttl: links.length ? SEARCH_CACHE_TTL_MS : EMPTY_SEARCH_CACHE_TTL_MS, links });
-    return links ?? [];
+    if (links === null)
+        return cached?.links ?? [];
+    // A placeholder row (a resolve still running past the budget) is kept only until the real answer is in.
+    const pending = links.some((link) => link.resolveId && !link.quality && !link.height);
+    searchCache.set(key, { at: now, ttl: links.length ? SEARCH_CACHE_TTL_MS : EMPTY_SEARCH_CACHE_TTL_MS, links, pending });
+    return links;
 }
 /*
     A TITLE'S WEB LINKS ARE LISTED ONCE, not on every visit to its "select
     quality" screen: coming back from the player shows the same rows at once.
     Safe because a row never carries its final URL -- playing it resolves
     (and re-checks) the link then, so an expired one is fetched afresh.
-    Keyed by scraper version, so an updated scraper searches again.
+    Keyed by scraper version, so an updated scraper searches again. An
+    answer with placeholder rows (resolves still running) is asked again on
+    the next visit, but given only `PENDING_RECHECK_MS` before the same
+    placeholders are shown -- the scraper answers at once when it has finished.
 */
+const PENDING_RECHECK_MS = 400;
 const SEARCH_CACHE_TTL_MS = 3 * 60 * 60_000;
 const EMPTY_SEARCH_CACHE_TTL_MS = 10 * 60_000;
 const searchCache = new Map();
